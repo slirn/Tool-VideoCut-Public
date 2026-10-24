@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>长视频剪辑 · 完整操作说明</title>
+<style>
+  :root {
+    --fg: #1e293b; --fg2: #475569; --muted: #64748b;
+    --line: #e2e8f0; --accent: #4f46e5; --soft: #eef2ff;
+    --ok: #059669; --warn: #b45309; --code-bg: #f1f5f9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 20px 72px;
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 15px; line-height: 1.85; color: var(--fg);
+    background: #f8fafc;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  header {
+    margin: 0 -20px 28px; padding: 30px 20px 26px;
+    background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 55%, #fdf2f8 100%);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0 0 6px; font-size: 25px; letter-spacing: .3px; }
+  header p { margin: 0; color: var(--muted); font-size: 13.5px; }
+  h2 {
+    font-size: 19px; margin: 38px 0 12px; padding: 0 0 8px 12px;
+    border-left: 4px solid var(--accent); border-bottom: 1px solid var(--line);
+  }
+  h3 { font-size: 16px; margin: 22px 0 8px; color: #312e81; }
+  h4 { font-size: 14.5px; margin: 16px 0 6px; color: var(--fg2); }
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0 12px; padding-left: 26px; }
+  li { margin: 5px 0; }
+  code {
+    background: var(--code-bg); padding: 1px 6px; border-radius: 5px;
+    font-family: Consolas, "Courier New", monospace; font-size: 13px;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--line); padding: 8px 11px; text-align: left; vertical-align: top; }
+  th { background: var(--soft); font-weight: 600; }
+  .step {
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    padding: 4px 20px 16px; margin: 16px 0 22px;
+    box-shadow: 0 1px 3px rgba(15,23,42,.05);
+  }
+  .step > h3 { margin-top: 16px; color: var(--accent); }
+  .badge {
+    display: inline-block; padding: 1px 9px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; vertical-align: 2px;
+  }
+  .b-manual { background: #fef3c7; color: #92400e; }
+  .b-auto { background: #dcfce7; color: #166534; }
+  .b-note { background: var(--soft); color: #3730a3; }
+  .tip, .warn, .ok {
+    border-radius: 10px; padding: 11px 15px; margin: 12px 0; font-size: 14px;
+  }
+  .tip { background: var(--soft); border: 1px solid #c7d2fe; }
+  .warn { background: #fffbeb; border: 1px solid #fde68a; color: #78350f; }
+  .ok { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
+  .filelist { font-size: 13px; color: var(--muted); }
+  kbd {
+    background: #fff; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 6px; font-size: 12.5px;
+    font-family: Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #e2e8f0; --fg2: #cbd5e1; --muted: #94a3b8;
+      --line: #334155; --accent: #a78bfa; --soft: #1e1b4b; --code-bg: #1e293b;
+    }
+    body { background: #0f172a; }
+    header { background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%); border-color: #334155; }
+    .step { background: #131c31; border-color: #334155; }
+    h3 { color: #c4b5fd; }
+    th { background: #1e1b4b; }
+    .tip { background: #1e1b4b; border-color: #4338ca; }
+    .warn { background: #3b2a12; border-color: #92400e; color: #fde68a; }
+    .ok { background: #0d2f24; border-color: #047857; color: #6ee7b7; }
+    kbd { background: #1e293b; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>长视频剪辑 · 完整操作说明</h1>
+  <p>VideoCut 工作台 · 从一条原始视频到可发布的成片，逐步说明每一阶段「做什么、怎么操作、产物是什么、常见问题」。</p>
+</header>
+
+<h2>〇、开始之前</h2>
+<div class="step">
+<h3>0.1 准备环境</h3>
+<ul>
+  <li><b>ffmpeg</b>：剪辑与渲染全程依赖它。命令行执行 <code>ffmpeg -version</code> 能看到版本号即正常。</li>
+  <li><b>模型</b>：FunASR 与 ASR 模型在首次识别时自动下载（数 GB），之后离线可用。</li>
+  <li><b>大模型</b>：字幕修订、内容优化等环节需要配置模型（顶部「⚙ 设置 → 大模型设置」），密钥读环境变量。</li>
+</ul>
+<h3>0.2 登录与账号</h3>
+<p>浏览器打开工作台后进入登录页。默认管理员账号 <code>admin / admin123!@#</code>（首次启动自动创建），<b>登录后请立刻在「设置 → 用户管理」里改掉密码</b>。</p>
+<p>同一账号<b>只能在一个终端保持登录</b>：换浏览器或换机器登录会把上一个会话踢下线（这是设计如此，用于防止账号被多处同时使用）。</p>
+</div>
+
+<h2>一、创建任务</h2>
+<div class="step">
+<h3>1.1 新建任务</h3>
+<ol>
+  <li>在工作台首页点「新建任务」，填写任务名称。</li>
+  <li>上传原始视频（<code>mp4 / mov / mkv</code> 等）。视频是后续所有阶段的唯一来源，<b>建议先用一段 1–3 分钟的样片跑通流程</b>，再上长视频。</li>
+  <li>可选：填充分词，用于「切分修剪」阶段按语义保留片段。</li>
+</ol>
+<h3>1.2 进入工作台</h3>
+<p>任务列表里点任务卡片进入工作台。左侧是<b>阶段栏</b>（六个阶段 + 执行日志），右侧是当前阶段的工作区。</p>
+<div class="tip">阶段栏顶部有「完成后，自动打开下一阶段界面」开关。勾上后，当前阶段做完会自动切到下一阶段，省去手动点；不勾则停在原页由你自己看。</div>
+</div>
+
+<h2>二、阶段 1 · 字幕生成</h2>
+<div class="step">
+<h3>2.1 这步做什么</h3>
+<p>用 FunASR 把视频语音转成带时间戳的字幕。这是后面所有步骤的基础——没有字幕就无法修订、无法切分。</p>
+<h3>2.2 怎么操作</h3>
+<ol>
+  <li>在字幕面板选<b>识别模型</b>（中文用 <code>paraformer</code> 即可）、<b>语言</b>。</li>
+  <li>需要识别专有名词（人名、产品名、术语）时，先去顶部「⚙ 设置 → 热词库」加词条，识别准确率会明显提升。</li>
+  <li>多人对话的视频可勾选「<b>区分说话人</b>」——后续可以按人批量删除或只保留某个人。</li>
+  <li>点「生成字幕」。进度条与已耗时在面板里实时显示；视频越长越慢（通常几分钟到几十分钟）。</li>
+</ol>
+<h3>2.3 产物</h3>
+<p class="filelist"><code>outputs/subtitle.json</code>（结构化字幕）、<code>outputs/subtitle.srt</code>（通用字幕格式）</p>
+<div class="tip">字幕质量直接决定后续切分质量。识别完先扫一眼有没有大段乱码或时间轴错位，必要时调整模型/热词后重跑，别急着往下走。</div>
+</div>
+
+<h2>三、阶段 2 · 字幕修订</h2>
+<div class="step">
+<h3>3.1 这步做什么</h3>
+<p>让大模型逐条审阅字幕：修正错别字、标点、明显的识别错误，并按语义把长句切开。这一步的产物是后面「切分修剪」的决策依据。</p>
+<h3>3.2 怎么操作</h3>
+<ol>
+  <li>选<b>严谨性</b>：<span class="badge b-manual">人工设置</span>
+    <ul>
+      <li><b>高</b>：逐条精修，适合正式课程/对外内容；耗时最长。</li>
+      <li><b>中</b>：只改明确错误，默认档位，性价比最高。</li>
+      <li><b>低</b>：只动严重问题，适合粗剪试片。</li>
+    </ul>
+  </li>
+  <li>「<b>跳过建议类别</b>」：如「标点」「错别字」，让模型专注别的。</li>
+  <li>「<b>自动关联人员 ID</b>」：开了区分说话人时，把字幕行对应到具体的人（后续可按人操作）。</li>
+  <li>「<b>默认接受所有建议</b>」：全量自动采纳。若想逐条人工确认，先别勾。</li>
+</ol>
+<h4>逐条审阅</h4>
+<p>不勾「默认接受」时，右侧会列出每条建议（原文 → 建议文本），可逐条接受/拒绝。处理完记得<b>点「保存决策」</b>——不保存的话下游拿不到决策。</p>
+<div class="warn">这一阶段经常拦住后续：「切分修剪」会检查是否还有未决策的条目，有残留就拒绝执行。看到「还有 N 条未决策，请先保存全部决策」就回这里把剩下的处理完。</div>
+</div>
+
+<h2>四、阶段 3 · 切分修剪</h2>
+<div class="step">
+<h3>4.1 这步做什么</h3>
+<p>把字幕按修订后的文本重新切成「保留段 / 删除段」，形成粗剪的时间轴。这一步是<b>内容取舍的主战场</b>。</p>
+<h3>4.2 怎么操作</h3>
+<ol>
+  <li><b>默认决策</b>：<code>保留</code> 或 <code>删除</code>——模型无法判断的段落按这个走。建议先「保留」，再人工删掉不要的。</li>
+  <li><b>删除某些说话人</b>：填说话人 ID（如 <code>1,3</code>），这些人的所有记录整段剔除。适合访谈里只留主讲。</li>
+  <li>「<b>自动关联人员 ID</b>」：同阶段 2，建议保持一致。</li>
+  <li>执行后得到切分清单，可在页面上直接增删改每段的起止。</li>
+</ol>
+<div class="ok">提示：切分结果不满意时，<b>改回阶段 2 调整字幕、再重跑阶段 3</b>，比在阶段 3 手工抠时间戳高效得多。</div>
+</div>
+
+<h2>五、阶段 4 · 粗剪合成</h2>
+<div class="step">
+<h3>5.1 这步做什么</h3>
+<p>按保留区间把原视频拼成一条粗剪成片（未做字幕精修、未加包装）。<b>这一步必做</b>，后面阶段都基于它。</p>
+<h3>5.2 怎么操作</h3>
+<p>点「粗剪合成」→ 异步执行，页面显示进度与已耗时。产物：</p>
+<p class="filelist"><code>outputs/rough_compose.mp4</code></p>
+<p>合成期间不要刷新页面或关服务；粗剪通常几分钟到十几分钟（取决于总时长与机器性能）。</p>
+</div>
+
+<h2>六、阶段 5 · 优化字幕</h2>
+<div class="step">
+<h3>6.1 这步做什么</h3>
+<p>粗剪成片<b>重新识别</b>一遍字幕（此时视频已被剪短，口语更密），再由大模型挑出「不明确字词」给出替换建议。</p>
+<h3>6.2 怎么操作</h3>
+<ol>
+  <li>点「优化字幕」→ 先跑识别，再等模型出建议。</li>
+  <li>逐条确认替换；急用可勾「<b>默认接受所有替换</b>」。</li>
+  <li>点「确认保存」。</li>
+</ol>
+<div class="tip">这一步是可选的，但做过之后成片字幕的准确度通常更好；如果时间紧，可以先跳过，后续再回来补。</div>
+</div>
+
+<h2>七、阶段 6 · 精剪合成（最终导出）</h2>
+<div class="step">
+<h3>7.1 这步做什么</h3>
+<p>把粗剪成片做成最终成片：加封面、背景图、背景音乐、字幕样式，可整篇导出也可只导出一段区间。</p>
+<h3>7.2 参数怎么理解</h3>
+<table>
+<tr><th>参数组</th><th>控制什么</th></tr>
+<tr><td><b>布局</b></td><td>视频、字幕、封面、背景各区域的位置与缩放；视频源裁剪（crop）支持「16:9 锁定」防止变形</td></tr>
+<tr><td><b>字体</b></td><td>字号、颜色、描边、背景块、对齐方式与偏移</td></tr>
+<tr><td><b>输出</b></td><td>分辨率（720p / 108p / 跟随源）、编码</td></tr>
+<tr><td><b>音频</b></td><td>BGM 开关、音量（dB，-8 左右自然）、淡入淡出</td></tr>
+<tr><td><b>预览</b></td><td>只影响「生成预览」的截取区间，不影响最终导出</td></tr>
+<tr><td><b>检测区域</b></td><td>AI 检测出的主体区域，可一键套用到背景等区域</td></tr>
+</table>
+<h3>7.3 常用操作</h3>
+<ul>
+  <li><b>素材</b>：封面图、背景图、背景音乐可上传，也可「自动获取」上游已有产物。</li>
+  <li><b>参数模板</b>：把调好的六组参数存成命名模板，下次直接套用（<code>tasks/_global_fine_profiles.json</code>）。</li>
+  <li><b>生成预览</b>：先出短片段确认效果再导出整片，省时间。</li>
+  <li><b>导出</b>：选「🎬 出整个片」或「✂️ 按区间导出一段」，确认后后台渲染。</li>
+</ul>
+<div class="warn">导出是全流程最慢的一步（重编码整片，可能几十分钟到数小时）。先出预览确认参数，再导出。</div>
+</div>
+
+<h2>八、流程配置（自动执行）</h2>
+<div class="step">
+<h3>8.1 它解决什么问题</h3>
+<p>手动跑六个阶段要一直守着。流程配置把参数集中在一处，配好后一次点「▶ 执行」，系统按顺序自动跑到你指定的阶段。</p>
+<h3>8.2 怎么用</h3>
+<ol>
+  <li>打开工作台顶部的「⚙ 流程配置」面板。</li>
+  <li>逐阶段设置参数（字幕生成是否区分说话人、修订严谨性、切分默认决策、优化是否全接受、精剪导出方式等）。</li>
+  <li>选「<b>运行模式</b>」：停在指定阶段 / 一键跑到底。</li>
+  <li>选「<b>完成到哪个阶段停</b>」——例如停在「字幕修订后停」等人审阅。</li>
+  <li>点「▶ 执行」。右上角出现状态条，显示当前阶段、进度与逐条日志；随时可「⏹ 停止」。</li>
+</ol>
+<h4>续跑</h4>
+<p>每个阶段标题右侧都有「▶ 从本阶段开始」——跳过已完成的阶段从指定处续跑。执行记录里能看到上次跑到哪了。</p>
+<h4>内置模板</h4>
+<p>面板左上角可切换「人工全审 / 半自动 / 全自动」三套内置模板：人工全审 = 字幕修订后停；半自动 = 粗剪合成后停；全自动 = 跑到底。套用后再微调即可。</p>
+</div>
+
+<h2>九、执行日志</h2>
+<div class="step">
+<h3>9.1 看什么</h3>
+<p>左侧阶段栏最下方「📜 执行日志」记录了本任务所有阶段的执行历史：起止时间、耗时、成功/失败、错误信息，以及该次是否由流程配置自动触发（⚙ 自动标记）。</p>
+<h3>9.2 怎么筛</h3>
+<ul>
+  <li><b>阶段</b>：只看字幕生成 / 粗剪合成 / 精剪导出 等某几类操作</li>
+  <li><b>状态</b>：成功 / 失败 / 运行中</li>
+  <li><b>模式</b>：<b>⚙ 自动</b> 只看流程配置自动执行产生的那一轮</li>
+  <li><b>时间</b>：今天 / 近 7 天 / 近 30 天 / 全部</li>
+  <li><b>关键词</b>：搜错误信息里的关键词</li>
+</ul>
+<p>底部可翻页（每页 20 条）。</p>
+<div class="tip">排查问题的顺序：先在日志里筛「❌ 失败」看报错原文 → 再按错误里的文件名/阶段名回到对应阶段处理 → 改完用「▶ 从本阶段开始」续跑。</div>
+</div>
+
+<h2>十、设置菜单</h2>
+<div class="step">
+<h3>10.1 ⌨ 快捷键</h3>
+<p>自定义各阶段常用操作的按键（长短视频均生效）。保存后立即生效，重开页面也保留。</p>
+<h3>10.2 📚 热词库</h3>
+<p>维护专有名词词表（人名、品牌、术语）。<b>在字幕生成之前配置收益最大</b>；也可在生成后补录再重跑识别。</p>
+<h3>10.3 大模型设置</h3>
+<p>配置要用的模型与接口（OpenAI 兼容 / Anthropic 协议）。密钥填<b>环境变量名</b>（如 <code>DASHSCOPE_API_KEY</code>），真实密钥写在环境变量里，<b>不会存进数据库</b>。</p>
+<h3>10.4 📥 导入参数</h3>
+<p>「❓ 帮助 → 导入长视频参数」会用内置默认参数填充当前任务的精剪参数（<b>素材路径不受影响</b>），适合新环境快速起步。</p>
+</div>
+
+<h2>十一、参数会被自动记住</h2>
+<div class="step">
+<p>每次改动精剪参数，系统都会：</p>
+<ol>
+  <li>写入当前任务：<code>tasks/&lt;task_id&gt;/fine_compose.json</code></li>
+  <li><b>另外自动存一份全局快照</b>：<code>tasks/_global_fine_params.json</code></li>
+</ol>
+<p>第 2 份是给「换任务 / 换机器 / 新系统」用的——新环境直接沿用最近一次的参数，微调即可，不用从头调。</p>
+</div>
+
+<h2>十二、常见问题</h2>
+<div class="step">
+<h4>「还有 N 条未决策，请先保存全部决策」</h4>
+<p>阶段 2 字幕修订有遗留没处理的建议。回去逐条处理（或勾「默认接受所有建议」重跑）并点「保存决策」。</p>
+<h4>阶段 4 提示缺少依赖产物</h4>
+<p>上游阶段没跑完。检查日志里前序阶段是否失败，失败就先修再重跑；想直接续跑就用「▶ 从本阶段开始」前先确认前序产物存在。</p>
+<h4>粗剪/导出很慢</h4>
+<p>是正常的（整片重编码）。先用「生成预览」验证参数，再导出整片；确认机器上没有其他重任务在跑。</p>
+<h4>识别结果大面积乱码</h4>
+<p>先换模型（<code>paraformer</code> → <code>sensevoice</code>）试试，再补热词库重跑。</p>
+<h4>换了浏览器就登不上</h4>
+<p>单账号单会话的设计：新登录会把旧会话踢掉，属正常。用新浏览器登录即可。</p>
+</div>
+
+</div>
+</body>
+</html>

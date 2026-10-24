@@ -1,0 +1,64 @@
+{
+  "layout": {
+    "video": {
+      "x": 0,
+      "y": 0,
+      "scale": 0.7,
+      "crop_x": 0,
+      "crop_y": 0,
+      "crop_w": 1920,
+      "crop_h": 1080,
+      "enabled": true,
+      "crop_aspect_lock": true
+    },
+    "subtitle": {
+      "x": 672,
+      "y": 972,
+      "scale": 1.0,
+      "enabled": true
+    },
+    "cover": {
+      "enabled": false,
+      "duration": 2.0
+    },
+    "bg": {
+      "x": 0,
+      "y": 0,
+      "scale": 1.0,
+      "enabled": false
+    }
+  },
+  "font": {
+    "size": 36,
+    "color": "#FFFFFF",
+    "stroke_width": 2,
+    "stroke_color": "#000000",
+    "bg_enabled": false,
+    "bg_color": "#000000",
+    "bg_opacity": 0.6,
+    "bg_radius": 4,
+    "bold": true,
+    "align": "center",
+    "offset": 0,
+    "family": "STHeitiMedium"
+  },
+  "output": {
+    "resolution": "1080p",
+    "codec": "h264",
+    "audio_codec": "aac"
+  },
+  "audio": {
+    "enabled": false,
+    "volume_db": -8.0,
+    "fade_in": 0.0,
+    "fade_out": 0.0
+  },
+  "preview": {
+    "start_h": 0,
+    "start_m": 0,
+    "start_s": 0,
+    "duration": 10
+  },
+  "detected_region": null,
+  "materials": {}
+}

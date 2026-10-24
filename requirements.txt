@@ -1,0 +1,14 @@
+librosa
+soundfile
+scikit-learn>=1.3.2
+funasr>=1.1.2
+moviepy==1.0.3
+numpy==1.26.4
+gradio>=4.0,<5.0
+modelscope
+torch>=1.13
+torchaudio
+openai
+g4f
+dashscope
+curl_cffi

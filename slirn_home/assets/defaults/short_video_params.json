@@ -1,0 +1,151 @@
+{
+  "materials": {},
+  "layout": {
+    "video": {
+      "x": 0,
+      "y": 0,
+      "w": 1080,
+      "h": 1920,
+      "enabled": true,
+      "crop_x": 0,
+      "crop_y": 0,
+      "crop_w": 1920,
+      "crop_h": 1080,
+      "crop_aspect_lock": true,
+      "crop_region_lock": false
+    },
+    "subtitle": {
+      "x": 60,
+      "y": 1620,
+      "w": 960,
+      "h": 240,
+      "enabled": true
+    },
+    "cover": {
+      "x": 0,
+      "y": 0,
+      "w": 1080,
+      "h": 1080,
+      "enabled": true
+    },
+    "bg": {
+      "x": 0,
+      "y": 0,
+      "w": 1080,
+      "h": 1920,
+      "enabled": true
+    },
+    "mentor_text": {
+      "x": 60,
+      "y": 100,
+      "w": 740,
+      "h": 240,
+      "enabled": true
+    },
+    "avatar": {
+      "x": 850,
+      "y": 80,
+      "w": 220,
+      "h": 220,
+      "enabled": true
+    },
+    "avatar_shape": "circle",
+    "title": {
+      "x": 90,
+      "y": 380,
+      "w": 900,
+      "h": 340,
+      "enabled": true
+    },
+    "cover_title": {
+      "x": 90,
+      "y": 380,
+      "w": 900,
+      "h": 340,
+      "enabled": true
+    }
+  },
+  "mentor": {
+    "nickname": "",
+    "nickname_font": "STHeitiMedium.ttc",
+    "nickname_size": 42,
+    "nickname_color": "#FFFFFF",
+    "nickname_outline_enabled": true,
+    "nickname_outline_color": "#000000",
+    "nickname_outline_width": 2,
+    "title": "",
+    "title_font": "STHeitiMedium.ttc",
+    "title_size": 36,
+    "title_color": "#FFE9B8",
+    "title_outline_enabled": true,
+    "title_outline_color": "#000000",
+    "title_outline_width": 2,
+    "title_line_spacing": 0
+  },
+  "title": {
+    "family": "STHeitiMedium.ttc",
+    "size": 64,
+    "bold": true,
+    "align": "center",
+    "color": "#FFFFFF",
+    "shadow_color": "#000000",
+    "shadow_opacity": 0.6,
+    "shadow_depth": 4,
+    "line_spacing": 0
+  },
+  "cover_title": {
+    "family": "STHeitiMedium.ttc",
+    "size": 64,
+    "bold": true,
+    "align": "center",
+    "color": "#FFFFFF",
+    "shadow_color": "#000000",
+    "shadow_opacity": 0.6,
+    "shadow_depth": 4,
+    "line_spacing": 0
+  },
+  "font": {
+    "family": "STHeitiMedium.ttc",
+    "size": 48,
+    "bold": false,
+    "align": "center",
+    "offset_ms": 0,
+    "stroke_width": 2,
+    "color": "#FFFFFF",
+    "stroke_color": "#000000",
+    "bg_enabled": false,
+    "bg_color": "#000000",
+    "bg_opacity": 0.5,
+    "bg_radius": 8
+  },
+  "output": {
+    "resolution": "720p",
+    "fps": 30,
+    "codec": "libx264"
+  },
+  "audio": {
+    "enabled": false,
+    "bgm_path": "",
+    "volume_db": -6,
+    "fade_in_ms": 500,
+    "fade_out_ms": 1000
+  },
+  "preview": {
+    "start_ms": 0,
+    "duration_sec": 5
+  },
+  "detected_region": null,
+  "ai_layout_result": null,
+  "config": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "duration_min": 30,
+    "duration_max": 60,
+    "variants": 3,
+    "transition": "fade",
+    "transition_duration": 0.5,
+    "bgm_volume_db": -16.0,
+    "allow_external_llm": true
+  }
+}

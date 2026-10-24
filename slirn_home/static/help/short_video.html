@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>短视频剪辑 · 完整操作说明</title>
+<style>
+  :root {
+    --fg: #1e293b; --fg2: #475569; --muted: #64748b;
+    --line: #e2e8f0; --accent: #0d9488; --soft: #f0fdfa;
+    --warn: #b45309; --code-bg: #f1f5f9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 20px 72px;
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 15px; line-height: 1.85; color: var(--fg);
+    background: #f8fafc;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  header {
+    margin: 0 -20px 28px; padding: 30px 20px 26px;
+    background: linear-gradient(135deg, #f0fdfa 0%, #ecfeff 55%, #f5f3ff 100%);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0 0 6px; font-size: 25px; letter-spacing: .3px; }
+  header p { margin: 0; color: var(--muted); font-size: 13.5px; }
+  h2 {
+    font-size: 19px; margin: 38px 0 12px; padding: 0 0 8px 12px;
+    border-left: 4px solid var(--accent); border-bottom: 1px solid var(--line);
+  }
+  h3 { font-size: 16px; margin: 22px 0 8px; color: #115e59; }
+  h4 { font-size: 14.5px; margin: 16px 0 6px; color: var(--fg2); }
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0 12px; padding-left: 26px; }
+  li { margin: 5px 0; }
+  code {
+    background: var(--code-bg); padding: 1px 6px; border-radius: 5px;
+    font-family: Consolas, "Courier New", monospace; font-size: 13px;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--line); padding: 8px 11px; text-align: left; vertical-align: top; }
+  th { background: var(--soft); font-weight: 600; }
+  .step {
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    padding: 4px 20px 16px; margin: 16px 0 22px;
+    box-shadow: 0 1px 3px rgba(15,23,42,.05);
+  }
+  .step > h3 { margin-top: 16px; color: var(--accent); }
+  .badge {
+    display: inline-block; padding: 1px 9px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; vertical-align: 2px;
+  }
+  .b-manual { background: #fef3c7; color: #92400e; }
+  .b-auto { background: #dcfce7; color: #166534; }
+  .b-note { background: var(--soft); color: #115e59; }
+  .tip, .warn, .ok {
+    border-radius: 10px; padding: 11px 15px; margin: 12px 0; font-size: 14px;
+  }
+  .tip { background: var(--soft); border: 1px solid #99f6e4; }
+  .warn { background: #fffbeb; border: 1px solid #fde68a; color: #78350f; }
+  .ok { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
+  .filelist { font-size: 13px; color: var(--muted); }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #e2e8f0; --fg2: #cbd5e1; --muted: #94a3b8;
+      --line: #334155; --accent: #2dd4bf; --soft: #0f2e2b; --code-bg: #1e293b;
+    }
+    body { background: #0f172a; }
+    header { background: linear-gradient(135deg, #0f2e2b 0%, #134e4a 100%); border-color: #334155; }
+    .step { background: #131c31; border-color: #334155; }
+    h3 { color: #5eead4; }
+    th { background: #0f2e2b; }
+    .tip { background: #0f2e2b; border-color: #115e59; }
+    .warn { background: #3b2a12; border-color: #92400e; color: #fde68a; }
+    .ok { background: #0d2f24; border-color: #047857; color: #6ee7b7; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>短视频剪辑 · 完整操作说明</h1>
+  <p>从一条长视频里拆出多条独立竖屏短视频 · 逐步说明每个阶段「做什么、怎么操作、产物是什么、常见问题」。</p>
+</header>
+
+<h2>〇、整体思路</h2>
+<div class="step">
+<p>短视频模块的定位是：<b>把一条长视频拆成多条能独立发布的竖屏短视频</b>。六个阶段依次是：</p>
+<table>
+<tr><th>阶段</th><th>一句话</th><th>产出</th></tr>
+<tr><td>1 视频选择</td><td>挑一条源视频作为拆条素材</td><td>项目绑定源素材</td></tr>
+<tr><td>2 字幕提取</td><td>把语音转成带时间戳的字幕</td><td><code>stage2/raw.srt</code></td></tr>
+<tr><td>3 内容提取</td><td>按提示词把字幕重组为 N 条独立短视频</td><td><code>stage3/highlights.json</code></td></tr>
+<tr><td>4 内容优化</td><td>大模型切分长行、修正文字、删冗余字幕</td><td><code>stage4_optimize/optimized_highlights.json</code></td></tr>
+<tr><td>5 粗剪合成</td><td>把每条片段剪成候选成片</td><td><code>stage4/coarse_NN.mp4</code></td></tr>
+<tr><td>6 精剪混编</td><td>加封面/背景/BGM/布局，渲染最终片</td><td><code>stage6/final_NN.mp4</code></td></tr>
+</table>
+<div class="tip">阶段 1–5 是<b>内容生产</b>（决定「剪什么、剪多长」），阶段 6 是<b>包装与渲染</b>（决定「长什么样」）。前者出错要重跑，后面几层会跟着作废。</div>
+</div>
+
+<h2>一、创建短视频项目</h2>
+<div class="step">
+<h3>1.1 从任务进</h3>
+<ol>
+  <li>先在<b>长视频任务</b>里上传一条原始视频（短视频的素材来自任务）。</li>
+  <li>切到顶部「🎞 短视频列表」→ 点「新建短视频任务」，填写项目名称 → 创建。</li>
+</ol>
+<p>一个任务下可以建多个短视频项目（例如同一条课程剪成「知识卡」和「故事线」两套）。</p>
+</div>
+
+<h2>二、阶段 1 · 视频选择</h2>
+<div class="step">
+<h3>2.1 怎么操作</h3>
+<p>在「视频选择」面板里挑本项目要用的源视频（任务素材列表中的一段），确认后阶段 1 变为完成，下游阶段自动重置为待执行。</p>
+<div class="warn">换源视频等于换素材：<b>之前所有阶段的产物都会作废</b>，需要从阶段 2 重跑。</div>
+</div>
+
+<h2>三、阶段 2 · 字幕提取</h2>
+<div class="step">
+<h3>3.1 怎么操作</h3>
+<ol>
+  <li>选<b>识别模型</b>（中文 <code>paraformer</code>）、<b>语言</b>。</li>
+  <li>有专有名词先去「⚙ 设置 → 热词库」配置（对短视频同样有效）。</li>
+  <li>点「字幕提取」。会先加载模型（10–30 秒）再识别，进度与已耗时实时显示。</li>
+</ol>
+<h3>3.2 产物</h3>
+<p class="filelist"><code>stage2/raw.srt</code>（字幕）、<code>stage2/raw.json</code>（识别原始结果）</p>
+</div>
+
+<h2>四、阶段 3 · 内容提取（拆条，最关键的一步）</h2>
+<div class="step">
+<h3>4.1 这步做什么</h3>
+<p>让大模型读整段字幕，<b>重新组织</b>出 N 条互相独立、各有开场钩子和收尾的短视频。注意不是连续切片，而是跨源位置自由挑选、重新排序的独立片段。</p>
+<h3>4.2 提示词块（系统提示词模板）</h3>
+<p>面板与阶段页都有「提示词」下拉/文本框，三个内置模板：</p>
+<table>
+<tr><th>模板</th><th>适用</th><th>特点</th></tr>
+<tr><td><b>钩子优先</b></td><td>推广、拉新、悬念</td><td>第一条放最抓人的钩子</td></tr>
+<tr><td><b>主题聚类</b></td><td>知识卡、课程拆条</td><td>按内容主题分成独立知识小卡</td></tr>
+<tr><td><b>起承转合</b></td><td>故事、访谈、案例</td><td>每条都有起承转合的完整故事弧</td></tr>
+</table>
+<p>模板即<b>系统提示词原文</b>；「解析提示词」留空就用模板原文，填了就以你写的为准。</p>
+<h3>4.3 生成数量与时长区间 <span class="badge b-manual">人工设置</span></h3>
+<ul>
+  <li><b>生成数量</b>（1–10）：本次拆几条。数量多时长就短，一般按「一条讲清一个点」来定。</li>
+  <li><b>每条时长下限 / 上限</b>（秒）：单条短视频的时长范围。<b>这个值直接写进提示词</b>，模型会照着来；竖屏短视频常见是 30–60 秒。</li>
+</ul>
+<h3>4.4 其它选项</h3>
+<ul>
+  <li><b>发送截图给 AI</b>：勾上会把源视频关键帧截图一起给模型（需要 OCR 支持的模型），有画面信息的素材（如 PPT 讲解）建议勾。</li>
+</ul>
+<h3>4.5 逐条微调</h3>
+<p>解析完成后每条片段是一个页签，可单独操作：</p>
+<ul>
+  <li><b>单条重跑</b>：只重跑这一条（沿用当前提示词与时长区间）。</li>
+  <li><b>删除片段</b>、<b>恢复顺序</b>（模型可能重排了字幕行顺序，一键还原）。</li>
+  <li><b>片段预览</b>：在浏览器里按时间段跳转预览这条片段。</li>
+</ul>
+<div class="warn">改了生成数量或时长区间后，<b>必须重跑阶段 3</b>，否则阶段 4/5 用的还是旧结果。旧产物会被自动作废并提示重跑。</div>
+</div>
+
+<h2>五、阶段 4 · 内容优化</h2>
+<div class="step">
+<h3>5.1 这步做什么</h3>
+<p>把每条片段的字幕交给大模型做「精修」：切分过长的句子、修正与音频不符的文字、删掉无意义的行（如「嗯」「那个」）。结果单独存一份，<b>不覆盖阶段 3 的原始解析结果</b>（可随时对照/回退）。</p>
+<h3>5.2 怎么操作</h3>
+<ol>
+  <li>点「内容优化」→ 逐条调用模型（条数多时耗时明显）。</li>
+  <li>结果里能看到模型<b>删掉的行</b>（标记为「LLM 已删」）并保留展示，方便你核对。</li>
+  <li>需要更细的手工调整：每行可<b>编辑文字 / 临时删除 / 拖拽调整顺序</b>，也可以把一行<b>拆成两行</b>或把两行<b>合并</b>；改完可<b>预览</b>该条片段。</li>
+  <li>单条重跑：只重跑某一条，其余条保留既有结果。</li>
+</ol>
+<div class="tip">手工编辑的内容会单独保存成「手动层」，与模型结果并存——重新跑模型不会冲掉你的手工修改，但会作废该条的下游（阶段 5）。</div>
+</div>
+
+<h2>六、阶段 5 · 粗剪合成</h2>
+<div class="step">
+<h3>6.1 这步做什么</h3>
+<p>把阶段 4 的每条片段按时间轴剪成候选成片（每条一个 mp4 + 一份字幕），这一步之后才有「一条条视频」可挑。</p>
+<h3>6.2 怎么操作</h3>
+<ol>
+  <li>可先设<b>起止位置（%）</b>：在整条源视频里只取某一段范围来剪（默认全量 0–100%）。</li>
+  <li>点「粗剪合成」→ 异步执行，页面显示进度、已完成条数与每条耗时；可只重跑某一条。</li>
+</ol>
+<h3>6.3 成片字幕（可选）</h3>
+<p>粗剪完成后可对成片<b>再识别一次字幕</b>，得到连续字幕（SRT），并支持逐句改字——这样烧进画面的字幕与你的口播完全一致。改完可以导出字幕文件。</p>
+<div class="warn">粗剪产物是阶段 6 的输入。删掉某条粗剪会作废它的下游（精剪混编）。</div>
+</div>
+
+<h2>七、阶段 6 · 精剪混编（最终成片）</h2>
+<div class="step">
+<h3>7.1 参数分组</h3>
+<table>
+<tr><th>组</th><th>控制什么</th></tr>
+<tr><td><b>布局</b></td><td>视频、字幕、封面、背景、导师文字、导师头像、标题、封面标题各区域的位置与大小；视频源裁剪支持 16:9 锁定</td></tr>
+<tr><td><b>导师文字</b></td><td>昵称与标题的文本、字体、字号、颜色、描边</td></tr>
+<tr><td><b>字体</b></td><td>字幕字号、颜色、描边、背景块、对齐</td></tr>
+<tr><td><b>输出</b></td><td>分辨率（720p / 1080p / 跟随源）与编码</td></tr>
+<tr><td><b>音频</b></td><td>BGM 与音量</td></tr>
+<tr><td><b>素材</b></td><td>封面图、背景图、导师头像（每个槽位可上传）</td></tr>
+</table>
+
+<h3>7.2 哪些内容是「可选」的（重点）</h3>
+<p>布局里的每个区域都有一个<b>勾选框</b>（启用此区域）。<b>只有勾选了，对应内容才会出现在成片里；不勾选就不会输出</b>——不是画了但看不见，而是渲染时整块跳过。</p>
+<table>
+<tr><th>元素</th><th>所在</th><th>不勾选时</th></tr>
+<tr><td><b>导师文字</b>（导师抬头、昵称与标题文字）</td><td>布局 → 导师文字区域</td><td>成片里<b>不出现</b>任何导师抬头/昵称/导师标题文字</td></tr>
+<tr><td><b>导师头像</b></td><td>布局 → 导师头像区域</td><td>成片里<b>不出现</b>头像（圆形或矩形）</td></tr>
+<tr><td><b>标题</b>（输出到画面的标题）</td><td>布局 → 标题区域</td><td>成片里<b>不出现</b>标题文字</td></tr>
+<tr><td><b>封面标题</b>（封面片头段上的标题）</td><td>布局 → 封面标题区域</td><td>封面片头段<b>不叠</b>标题文字（封面图本身照常显示）</td></tr>
+<tr><td>背景 / 字幕</td><td>布局 → 背景、字幕区域</td><td>同样不输出（背景图不铺、字幕不烧）</td></tr>
+<tr><td>视频</td><td>布局 → 视频区域</td><td>—（视频是内容本体，恒定输出，勾选框对它无意义）</td></tr>
+</table>
+
+<h4>什么时候应该关掉它们</h4>
+<p>这两种情形下，<b>把对应项取消勾选</b>，避免和已有画面里的文字重复：</p>
+<ol>
+  <li><b>封面已经带标题</b> —— 封面图本身已经排好了标题文字，就不要再叠一层：
+      取消勾选「<b>封面标题</b>」（以及不需要的画面「<b>标题</b>」）。</li>
+  <li><b>背景图里已经带标题、导师头像、导师抬头相关文字</b> —— 背景是「画好的整版设计图」，
+      再叠系统生成的元素就会出现重影/挡字：
+      取消勾选「<b>标题</b>」「<b>封面标题</b>」「<b>导师头像</b>」「<b>导师文字</b>」，
+      只保留「视频」与需要的「字幕」。</li>
+</ol>
+<div class="tip">做法：先上传你设计好的封面 / 背景图 → 预览一眼 → 把重复的元素取消勾选 → 再导出。
+这样成片里的文字完全由你设计稿说了算，系统不再叠加第二份。</div>
+<div class="warn">注意：素材槽位里<b>传了图</b>不等于<b>会显示</b>——最终是否输出由对应区域的勾选框决定。
+比如上传了导师头像但取消了「导师头像」勾选，成片里依然不会出现。</div>
+
+<h3>7.3 常用功能</h3>
+<ul>
+  <li><b>AI 智能布局</b>：让模型根据画面内容建议各区域摆放。</li>
+  <li><b>检测区域</b>：检测视频主体区域并一键填充到背景/布局。</li>
+  <li><b>参数模板</b>：把调好的参数存成模板复用（<code>tasks/_global_short_video_fine_profiles.json</code>）。</li>
+  <li><b>预览 / 导出</b>：先出预览确认，再导出最终片（渲染较慢，建议先预览）。</li>
+</ul>
+<h3>7.4 逐条处理</h3>
+<p>阶段 6 是<b>逐条</b>操作的：顶部有片段页签，切到哪条就改哪条的参数，导出也是按条导出。</p>
+</div>
+
+<h2>八、流程配置（自动执行）</h2>
+<div class="step">
+<h3>8.1 它能做什么</h3>
+<p>项目页顶部的「⚙ 流程配置」把各阶段参数集中在一处，配好后一次点「▶ 执行」，系统按顺序自动跑——<b>不用守着点每个按钮</b>。</p>
+<h3>8.2 可配置项</h3>
+<table>
+<tr><th>配置项</th><th>说明</th></tr>
+<tr><td>提示词块</td><td>阶段 3 的系统提示词模板（钩子优先 / 主题聚类 / 起承转合）</td></tr>
+<tr><td>生成数量 <span class="badge b-manual">人工设置</span></td><td>本次拆几条（1–10）</td></tr>
+<tr><td>时长上下限 <span class="badge b-manual">人工设置</span></td><td>每条短视频的秒数区间</td></tr>
+<tr><td>运行阶段</td><td>从哪一阶段开始跑、跑到哪一阶段停</td></tr>
+<tr><td>各阶段参数</td><td>识别模型/语言/热词、截图开关、粗剪起止位置等</td></tr>
+</table>
+<h3>8.3 执行</h3>
+<ol>
+  <li>填好参数 → 点「▶ 执行」。</li>
+  <li>弹出的<b>确认框</b>会列出生成数量、时长区间、提示词块、起止阶段——<b>确认无误再跑</b>。</li>
+  <li>右上角状态条显示当前阶段、进度与逐条日志，可随时「⏹ 停止」。</li>
+</ol>
+<div class="ok">自动执行<b>止于「粗剪合成」</b>——不会自动进入「精剪混编」。因为精剪需要你逐条挑封面/背景/BGM，交给机器没有意义。</div>
+</div>
+
+<h2>九、执行日志</h2>
+<div class="step">
+<p>阶段栏最下方「📜 执行日志」记录每个主要操作的时间、耗时、成功/失败与错误信息。</p>
+<ul>
+  <li><b>短视频操作</b>：按操作类型过滤（选择源视频 / 提取字幕 / 内容提取 / 内容优化 / 粗剪合成 / 精剪混编 …）</li>
+  <li><b>状态</b>：成功 / 失败 / 运行中</li>
+  <li><b>模式</b>：选「⚙ 自动」只看流程配置自动执行产生的那一轮</li>
+</ul>
+<p>底部可翻页。排查问题的顺序：筛「❌ 失败」→ 看报错原文 → 回到对应阶段修 → 用「▶ 从本阶段开始」续跑。</p>
+</div>
+
+<h2>十、参数会被自动记住</h2>
+<div class="step">
+<p>每次保存剪辑参数，系统都会：</p>
+<ol>
+  <li>写入当前项目（<code>project.json</code>）</li>
+  <li><b>另外自动存一份全局快照</b>：<code>tasks/_global_short_video_params.json</code></li>
+</ol>
+<p>第 2 份是给「换项目 / 换机器 / 新系统」用的——新环境直接沿用最近一次的参数，微调即可。</p>
+<p>「❓ 帮助 → 导入短视频参数」可用内置默认参数填充当前项目的剪辑参数与项目配置（<b>素材不受影响</b>）。</p>
+</div>
+
+<h2>十一、常见问题</h2>
+<div class="step">
+<h4>解析出来的片段都不好看 / 不是我想要的</h4>
+<p>先换<b>提示词块</b>（钩子优先 / 主题聚类 / 起承转合），再调<b>时长区间</b>；仍然不行就手动改某一条或单条重跑。</p>
+<h4>阶段 4 提示要先完成阶段 3</h4>
+<p>内容优化依赖阶段 3 的解析结果。回阶段 3 跑完（或改完参数重跑）再回来。</p>
+<h4>改了阶段 3 的数量，为什么阶段 4 的东西没了？</h4>
+<p>上游产物变了，下游会自动作废——这是「防止用旧结果出片」的保护。重新跑阶段 4/5 即可。</p>
+<h4>粗剪很慢</h4>
+<p>每条片段一次 ffmpeg 切片，条数越多越慢。可以只重跑某一条，不必全量重跑。</p>
+<h4>字幕烧进画面后和口播对不上</h4>
+<p>在阶段 5 用「成片字幕提取」重新识别并逐句改字，导出连续字幕后再进阶段 6。</p>
+<h4>自动执行跑到一半停了</h4>
+<p>看执行日志里「⚠️ 已跳过 / ❌ 出错」的条目；多半是某阶段缺少前置产物（如没选源视频）。补完后用「▶ 从本阶段开始」续跑。</p>
+</div>
+
+</div>
+</body>
+</html>
