@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,23 @@ def _save_json(path: Path, data: Any) -> None:
     os.replace(tmp, path)
 
 
+# 全部 AuthStore 实例共享的写锁（模块级 — launch.py 与 app.py 各建实例）。
+# 装饰在「读-改-写」方法上，串行化并发登录/建用户/成员变更，防止丢更新；
+# 纯读方法不锁。与服务层 threading.Lock 纪律对齐。
+_AUTH_LOCK = threading.RLock()
+
+
+def _locked(fn):
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _AUTH_LOCK:
+            return fn(*args, **kwargs)
+
+    return wrapper
+
+
 # ===================== AuthStore =====================
 
 class AuthStore:
@@ -93,6 +111,7 @@ class AuthStore:
                 return u
         return None
 
+    @_locked
     def create_user(
         self,
         username: str,
@@ -117,6 +136,7 @@ class AuthStore:
         log.info("创建用户 %s (admin=%s)", username, is_admin)
         return user
 
+    @_locked
     def update_user_password(self, username: str, new_password: str) -> bool:
         users = self.list_users()
         for u in users:
@@ -129,6 +149,7 @@ class AuthStore:
                 return True
         return False
 
+    @_locked
     def delete_user(self, username: str) -> bool:
         users = self.list_users()
         new_users = [u for u in users if u.get("username") != username]
@@ -154,6 +175,7 @@ class AuthStore:
     # REQ-20261021-142：登录日志（data/login_log.json，500 条滚动）
     _LOGIN_LOG_MAX = 500
 
+    @_locked
     def record_login_event(self, username: str, ip: str, result: str,
                            detail: str = "") -> None:
         """追加一条登录事件。result ∈ {success, fail, logout}。"""
@@ -195,6 +217,22 @@ class AuthStore:
     def count_users(self) -> int:
         return len(self.list_users())
 
+    def is_default_password(self, username: str) -> bool:
+        """该账号当前是否仍在使用出厂默认密码（首登强制改密的判定依据）。
+
+        只对「密码哈希 == DEFAULT_ADMIN_PASSWORD 的哈希」为真 —— 用户改过
+        密码后即为假；用户把自己的密码改成默认口令同样会命中（此时提示
+        改密也是正确行为）。
+        """
+        u = self.get_user(username)
+        if u is None:
+            return False
+        salt_hex = u.get("pw_salt", "")
+        hash_hex = u.get("pw_hash", "")
+        if not salt_hex or not hash_hex:
+            return False
+        return verify_password(self.DEFAULT_ADMIN_PASSWORD, salt_hex, hash_hex)
+
     def verify_credentials(self, username: str, password: str) -> dict | None:
         """验证密码；正确返回 {username, display_name, is_admin}，错误返 None。
 
@@ -219,6 +257,7 @@ class AuthStore:
 
     # ---------- 会话 ----------
 
+    @_locked
     def create_session(self, username: str, ttl_days: int = 30) -> str:
         sessions = _load_json(self.sessions_path, [])
         token = secrets.token_hex(32)
@@ -242,6 +281,7 @@ class AuthStore:
                    if s.get("username") == username
                    and s.get("expires_at", 0) >= now)
 
+    @_locked
     def user_from_token(self, token: str) -> dict | None:
         """查 user；过期自动清理。返 {username, display_name, is_admin}。"""
         if not token:
@@ -270,6 +310,7 @@ class AuthStore:
         return {"username": u["username"], "display_name": u.get("display_name", u["username"]),
                 "is_admin": u.get("is_admin", False)}
 
+    @_locked
     def delete_session(self, token: str) -> bool:
         sessions = _load_json(self.sessions_path, [])
         kept = [s for s in sessions if s.get("token") != token]
@@ -278,6 +319,7 @@ class AuthStore:
         _save_json(self.sessions_path, kept)
         return True
 
+    @_locked
     def purge_expired_sessions(self) -> int:
         sessions = _load_json(self.sessions_path, [])
         now = time.time()
@@ -298,6 +340,7 @@ class AuthStore:
     def list_task_members(self, task_id: str) -> list[str]:
         return list(self._load_memberships().get(f"task_{task_id}", []))
 
+    @_locked
     def add_task_member(self, task_id: str, username: str) -> bool:
         mems = self._load_memberships()
         key = f"task_{task_id}"
@@ -309,6 +352,7 @@ class AuthStore:
         self._save_memberships(mems)
         return True
 
+    @_locked
     def remove_task_member(self, task_id: str, username: str) -> bool:
         mems = self._load_memberships()
         key = f"task_{task_id}"
@@ -454,6 +498,19 @@ def _is_json_request(scope: dict) -> bool:
     return False
 
 
+def _bypass_active(scope: dict) -> bool:
+    """SLIRN_AUTH_BYPASS=1 是否对本请求生效。
+
+    硬化规则：环境变量开启 **且** 客户端来自回环。服务以 --listen 0.0.0.0
+    对局域网暴露时，远程请求即使误设了 bypass 也不放行（测试旁路只能
+    在本机自调 /slirn/api 的场景下使用，那正是它存在的目的）。
+    """
+    if os.environ.get("SLIRN_AUTH_BYPASS") != "1":
+        return False
+    client = scope.get("client") or ("", 0)
+    return str(client[0]) in ("127.0.0.1", "::1", "localhost")
+
+
 class SlirnAuthMiddleware:
     """REQ-20260926-NNN：cookie 会话中间件（纯 ASGI，非 BaseHTTPMiddleware）。
 
@@ -482,7 +539,7 @@ class SlirnAuthMiddleware:
         # 已登录的 ws 与 http 走同一 _run_with_user（scope state + contextvar
         # 挂 user，防止下游 ws 处理器看起来「匿名」）。
         if scope.get("type") == "websocket":
-            if os.environ.get("SLIRN_AUTH_BYPASS") == "1":
+            if _bypass_active(scope):
                 await self.app(scope, receive, send)
                 return
             _tok = _extract_session_token(scope)
@@ -498,22 +555,27 @@ class SlirnAuthMiddleware:
             return
         path = scope.get("path", "")
         method = scope.get("method", "?")
-        # REQ-20260926-NNN 排查：记每个 /slirn/api 请求的路径+方法+是否带 cookie
-        # 写到独立文件，不污染主日志
-        try:
-            import time as _t
-            ck = _extract_session_token(scope)
-            # 写到 repo_root/middleware_debug.log（slirn-standalone 仓库根）
-            _dbg = self.auth.repo_root / "middleware_debug.log"
-            with open(_dbg, "a", encoding="utf-8") as _f:
-                _f.write(f"{_t.strftime('%H:%M:%S')} {method} {path} cookie={'Y' if ck else 'N'}\n")
-        except Exception:  # noqa: BLE001
-            pass
+        # REQ-20260926-NNN 排查：记每个 /slirn/api 请求的路径+方法+是否带 cookie。
+        # 默认关闭（排查已结束，避免在仓库根无限追加日志文件）；
+        # 需要时设 SLIRN_MIDDLEWARE_DEBUG=1，写到 .temp/（已被 .gitignore 覆盖）。
+        if os.environ.get("SLIRN_MIDDLEWARE_DEBUG") == "1":
+            try:
+                import time as _t
+                ck = _extract_session_token(scope)
+                _dbg_dir = self.auth.repo_root / ".temp"
+                _dbg_dir.mkdir(exist_ok=True)
+                _dbg = _dbg_dir / "middleware_debug.log"
+                with open(_dbg, "a", encoding="utf-8") as _f:
+                    _f.write(f"{_t.strftime('%H:%M:%S')} {method} {path} cookie={'Y' if ck else 'N'}\n")
+            except Exception:  # noqa: BLE001
+                pass
         if _is_public_api_path(path) or path in _PAGE_PUBLIC_EXACT:
             await self.app(scope, receive, send)
             return
-        # 测试模式 bypass：每次读 env（不依赖模块加载时机）
-        if os.environ.get("SLIRN_AUTH_BYPASS") == "1":
+        # 测试模式 bypass：每次读 env（不依赖模块加载时机）。
+        # 硬化：仅在客户端来自回环时生效 —— --listen 0.0.0.0 对外暴露时，
+        # 局域网请求即使误设了 SLIRN_AUTH_BYPASS=1 也不再匿名放行
+        if _bypass_active(scope):
             user = {"username": "test-admin", "display_name": "test-admin",
                     "is_admin": True}
             await self._run_with_user(scope, receive, send, user, session_token="")

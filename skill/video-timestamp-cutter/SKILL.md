@@ -43,19 +43,16 @@ python skill/video-timestamp-cutter/scripts/cut_by_srt.py `
   --output "video_cut.mp4" `
   --start 10.5 `
   --end 65.3
-
-# 只剪切不说话的部分（静音检测，实验性）
-python skill/video-timestamp-cutter/scripts/cut_by_srt.py `
-  --input "video.mp4" `
-  --srt "video.srt" `
-  --output "video_cut.mp4" `
-  --remove-silent
 ```
 
 ### Python API
 
+skill 目录不是 Python 包（路径含连字符，无法直接 import）。
+需要编程调用时，把脚本目录加入 `sys.path` 再导入：
+
 ```python
-from slirn.skill.video-timestamp-cutter.scripts.cut_by_srt import cut_video_by_srt
+import sys; sys.path.insert(0, "skill/video-timestamp-cutter/scripts")
+from cut_by_srt import cut_video_by_srt
 
 # 按 SRT 所有条目剪切
 cut_video_by_srt("video.mp4", "video.srt", "output.mp4")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,6 +18,13 @@ from tasklib.schema import task_from_dict, task_to_dict
 from tasklib.time_utils import segment_filename, validate_segment
 
 log = logging.getLogger(__name__)
+
+# 全部 TaskManager 实例共享的写锁（模块级 — launch.py 与 app.py 会各建实例，
+# 实例级锁护不住跨实例的并发）。锁的粒度是「读-改-写 metadata.json」整个
+# 序列，防止管线线程推状态与用户编辑互踩丢更新；读操作不锁（原子替换
+# 保证看到的是完整文件）。与服务层（asr/compose/fine/pipeline）的
+# threading.Lock 纪律对齐。
+_TASKS_LOCK = threading.RLock()
 
 
 class TaskManager:
@@ -61,11 +69,12 @@ class TaskManager:
         if not original_video.exists():
             raise FileNotFoundError(f"原视频不存在: {original_video}")
 
-        task_id = self._next_task_id()
-        task_dir = self.tasks_dir / task_id
-        if task_dir.exists():
-            raise DuplicateTaskError(f"task_id 已存在: {task_id}")
-        task_dir.mkdir()
+        with _TASKS_LOCK:  # ID 分配 + mkdir 原子化（并发建任务不撞号）
+            task_id = self._next_task_id()
+            task_dir = self.tasks_dir / task_id
+            if task_dir.exists():
+                raise DuplicateTaskError(f"task_id 已存在: {task_id}")
+            task_dir.mkdir()
 
         # 子目录
         raw_input_dir = task_dir / "raw_input"
@@ -204,17 +213,19 @@ class TaskManager:
     # ---------- 更新 ----------
 
     def update_status(self, task_id: str, new_status: TaskStatus) -> None:
-        task = self.get(task_id)  # 不存在时抛 TaskNotFoundError
-        task.status = new_status
-        task.updated_at = datetime.now(timezone.utc)
-        self._write_metadata(task)
+        with _TASKS_LOCK:
+            task = self.get(task_id)  # 不存在时抛 TaskNotFoundError
+            task.status = new_status
+            task.updated_at = datetime.now(timezone.utc)
+            self._write_metadata(task)
         log.info("更新任务 %s 状态为 %s", task_id, new_status.value)
 
     def update_hotwords(self, task_id: str, hotwords: list[str]) -> None:
-        task = self.get(task_id)
-        task.hotwords_path.write_text("\n".join(hotwords), encoding="utf-8")
-        task.updated_at = datetime.now(timezone.utc)
-        self._write_metadata(task)
+        with _TASKS_LOCK:
+            task = self.get(task_id)
+            task.hotwords_path.write_text("\n".join(hotwords), encoding="utf-8")
+            task.updated_at = datetime.now(timezone.utc)
+            self._write_metadata(task)
         log.info("更新任务 %s 热词（%d 条）", task_id, len(hotwords))
 
     def update_task(
@@ -239,19 +250,20 @@ class TaskManager:
         Returns:
             更新后的 Task
         """
-        task = self.get(task_id)  # 不存在时抛 TaskNotFoundError
-        if name is not None and name.strip():
-            task.name = name.strip()
-        if segment_changed:
-            task.segment = segment
-        if hotwords is not None:
-            task.hotwords_path.write_text("\n".join(hotwords), encoding="utf-8")
-        if inherit_public is not None:
-            task.inherit_public = inherit_public
-        if hotword_sources is not None:
-            task.hotword_sources = dict(hotword_sources) if hotword_sources else None
-        task.updated_at = datetime.now(timezone.utc)
-        self._write_metadata(task)
+        with _TASKS_LOCK:
+            task = self.get(task_id)  # 不存在时抛 TaskNotFoundError
+            if name is not None and name.strip():
+                task.name = name.strip()
+            if segment_changed:
+                task.segment = segment
+            if hotwords is not None:
+                task.hotwords_path.write_text("\n".join(hotwords), encoding="utf-8")
+            if inherit_public is not None:
+                task.inherit_public = inherit_public
+            if hotword_sources is not None:
+                task.hotword_sources = dict(hotword_sources) if hotword_sources else None
+            task.updated_at = datetime.now(timezone.utc)
+            self._write_metadata(task)
         log.info("更新任务 %s（编辑）", task_id)
         return task
 
@@ -274,35 +286,36 @@ class TaskManager:
         if not task_dir.is_dir():
             raise TaskNotFoundError(f"任务不存在: {task_id}")
 
-        last_err: OSError | None = None
-        for attempt in range(3):
-            try:
-                for child in task_dir.iterdir():
-                    if child.name == "metadata.json":
-                        continue
-                    if child.is_dir() and not child.is_symlink():
-                        shutil.rmtree(child)
-                    else:
-                        child.unlink()
-                (task_dir / "metadata.json").unlink(missing_ok=True)
-                task_dir.rmdir()
-                log.info("删除任务 %s", task_id)
-                return
-            except FileNotFoundError:
-                if not task_dir.exists():
-                    return  # 并发删除/已消失 — 视为成功
-            except OSError as e:
-                last_err = e
-                log.warning(
-                    "删除任务 %s 第 %d 次失败: %s", task_id, attempt + 1, e
-                )
-                for p in task_dir.rglob("*"):  # 清只读位（Windows 常见）
-                    try:
-                        os.chmod(p, stat.S_IWRITE)
-                    except OSError:
-                        pass
-                time.sleep(0.6)
-        raise last_err  # type: ignore[misc]
+        with _TASKS_LOCK:  # 与 update_* 互斥：删除期间不被并发写回 metadata
+            last_err: OSError | None = None
+            for attempt in range(3):
+                try:
+                    for child in task_dir.iterdir():
+                        if child.name == "metadata.json":
+                            continue
+                        if child.is_dir() and not child.is_symlink():
+                            shutil.rmtree(child)
+                        else:
+                            child.unlink()
+                    (task_dir / "metadata.json").unlink(missing_ok=True)
+                    task_dir.rmdir()
+                    log.info("删除任务 %s", task_id)
+                    return
+                except FileNotFoundError:
+                    if not task_dir.exists():
+                        return  # 并发删除/已消失 — 视为成功
+                except OSError as e:
+                    last_err = e
+                    log.warning(
+                        "删除任务 %s 第 %d 次失败: %s", task_id, attempt + 1, e
+                    )
+                    for p in task_dir.rglob("*"):  # 清只读位（Windows 常见）
+                        try:
+                            os.chmod(p, stat.S_IWRITE)
+                        except OSError:
+                            pass
+                    time.sleep(0.6)
+            raise last_err  # type: ignore[misc]
 
     # ---------- 私有 ----------
 

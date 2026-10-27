@@ -170,6 +170,10 @@ class VideoClipper():
         sr, data = audio_input
         data = data.astype(np.float64)
 
+        # 提前初始化：timestamp_list 路径（LLM 时间戳）不经过下方的匹配分支，
+        # 不初始化的话最后拼接 message 时会 NameError（上游 main 已修，此处同步）
+        log_append = ""
+
         if timestamp_list is None:
             all_ts = []
             if dest_spk is None or dest_spk == '' or 'sd_sentences' not in state:

@@ -5,7 +5,9 @@
 
 import os
 import re
-import numpy as np  
+import ast
+import json
+import numpy as np
 
 PUNC_LIST = ['，', '。', '！', '？', '、', ',', '.', '?', '!']
 
@@ -21,7 +23,7 @@ def pre_proc(text):
                 res += text[i]+' '
         else:
             res += text[i]
-    if res[-1] == ' ':
+    if res and res[-1] == ' ':
         res = res[:-1]
     return res
 
@@ -32,8 +34,12 @@ def proc(raw_text, timestamp, dest_text, lang='zh'):
     offset = 0
     while True:
         fi = raw_text.find(dest_text, offset, len(raw_text))
-        ti = raw_text[:fi].count(' ')
         if fi == -1:
+            break
+        ti = raw_text[:fi].count(' ')
+        # 越界保护：匹配落在 token 序列末尾时（ti+ld-1 超出 timestamp），
+        # 旧实现直接 IndexError — 跳过该匹配比崩溃好
+        if ti + ld - 1 >= len(timestamp):
             break
         offset = fi + ld
         mi.append(fi)
@@ -61,28 +67,34 @@ def generate_vad_data(data, sd_sentences, sr=16000):
     return vad_data
 
 def write_state(output_dir, state):
+    # 序列化用 JSON（原实现是 str()/eval() 往返 — eval 反序列化存在任意代码
+    # 执行风险，状态文件被篡改即中招）。JSON 与旧格式对纯数据结构等价。
     for key in ['/recog_res_raw', '/timestamp', '/sentences']:#, '/sd_sentences']:
-        with open(output_dir+key, 'w') as fout:
-            fout.write(str(state[key[1:]]))
+        with open(output_dir+key, 'w', encoding='utf-8') as fout:
+            fout.write(json.dumps(state[key[1:]], ensure_ascii=False))
     if 'sd_sentences' in state:
-        with open(output_dir+'/sd_sentences', 'w') as fout:
-            fout.write(str(state['sd_sentences']))
+        with open(output_dir+'/sd_sentences', 'w', encoding='utf-8') as fout:
+            fout.write(json.dumps(state['sd_sentences'], ensure_ascii=False))
 
 def load_state(output_dir):
+    def _parse(text):
+        # 新格式：JSON。旧格式：Python repr（str() 直写）。
+        # 兼容读旧文件用 ast.literal_eval — 只解析字面量，不执行代码。
+        try:
+            return json.loads(text)
+        except ValueError:
+            return ast.literal_eval(text)
+
     state = {}
-    with open(output_dir+'/recog_res_raw') as fin:
-        line = fin.read()
-        state['recog_res_raw'] = line
-    with open(output_dir+'/timestamp') as fin:
-        line = fin.read()
-        state['timestamp'] = eval(line)
-    with open(output_dir+'/sentences') as fin:
-        line = fin.read()
-        state['sentences'] = eval(line)
+    with open(output_dir+'/recog_res_raw', encoding='utf-8') as fin:
+        state['recog_res_raw'] = fin.read()
+    with open(output_dir+'/timestamp', encoding='utf-8') as fin:
+        state['timestamp'] = _parse(fin.read())
+    with open(output_dir+'/sentences', encoding='utf-8') as fin:
+        state['sentences'] = _parse(fin.read())
     if os.path.exists(output_dir+'/sd_sentences'):
-        with open(output_dir+'/sd_sentences') as fin:
-            line = fin.read()
-            state['sd_sentences'] = eval(line)
+        with open(output_dir+'/sd_sentences', encoding='utf-8') as fin:
+            state['sd_sentences'] = _parse(fin.read())
     return state
 
 def convert_pcm_to_float(data):
@@ -114,7 +126,6 @@ def extract_timestamps(input_text):
     # 使用正则表达式查找所有时间戳
     timestamps = re.findall(r'\[(\d{2}:\d{2}:\d{2},\d{2,3})\s*-\s*(\d{2}:\d{2}:\d{2},\d{2,3})\]', input_text)
     times_list = []
-    print(timestamps)
     # 循环遍历找到的所有时间戳，并转换为毫秒
     for start_time, end_time in timestamps:
         start_millis = convert_time_to_millis(start_time)

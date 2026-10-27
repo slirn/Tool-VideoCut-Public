@@ -211,7 +211,7 @@ def _ffmpeg_to_wav16k_mono(video_path: Path) -> Path:
         str(out),
     ]
     log.info("[highlight] ffmpeg audio extract: %s", " ".join(cmd))
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, timeout=600)
     if not out.is_file() or out.stat().st_size < 44:
         raise RuntimeError(f"ffmpeg 抽 wav 失败或空: {out}")
     return out
@@ -323,94 +323,104 @@ def pick_highlights(
         "clip_video_file": str(out / f"{source.stem}_clip.mp4"),
         "video": mpy.VideoFileClip(str(source)),
     }
-    rec_result, rec_res_raw, state = audio_clipper.recog(
-        (wav_sr, wav_data), sd_switch, state, hotwords, output_dir=str(out),
-    )
-    srt_text = _srt_text_from_state(state)
-    result.srt_text = srt_text
-    (out / "source.srt").write_text(srt_text, encoding="utf-8")
-    _step("ASR done", {"srt_chars": len(srt_text), "state_keys": list(state.keys())})
-
-    if not srt_text.strip():
-        _step("ASR produced empty SRT — aborting")
-        return result
-
-    # ---- LLM 推理 ----
-    llm_fn = _resolve_llm_client(model, llm_map)
-    key = _resolve_api_key(model, api_key)
-    if key is None and not model.startswith("g4f"):
-        raise RuntimeError(
-            f"未找到 LLM API key（model={model}）。请传 api_key 或设置环境变量"
+    try:
+        rec_result, rec_res_raw, state = audio_clipper.recog(
+            (wav_sr, wav_data), sd_switch, state, hotwords, output_dir=str(out),
         )
+        srt_text = _srt_text_from_state(state)
+        result.srt_text = srt_text
+        (out / "source.srt").write_text(srt_text, encoding="utf-8")
+        _step("ASR done", {"srt_chars": len(srt_text), "state_keys": list(state.keys())})
 
-    _step("calling LLM", {"model": model})
-    # 上游 llm 客户端签名：(apikey, model, user_content, system_content)
-    # g4f 例外：(model, system_content, user_content) — 在 _call_llm 里适配
-    user_content = f"{user_p}\n{srt_text}"
-    system_content = sys_p
+        if not srt_text.strip():
+            _step("ASR produced empty SRT — aborting")
+            return result
 
-    if model.startswith("g4f"):
-        # g4f_openai_call(model=..., system_content=..., user_content=...)
-        llm_output = llm_fn(model=model, system_content=system_content, user_content=user_content)
-    elif model.startswith("qwen"):
-        llm_output = llm_fn(key=key, model=model, user_content=user_content, system_content=system_content)
-    else:
-        # openai_call(apikey, model, user_content, system_content)
-        llm_output = llm_fn(apikey=key, model=model, user_content=user_content, system_content=system_content)
+        # ---- LLM 推理 ----
+        llm_fn = _resolve_llm_client(model, llm_map)
+        key = _resolve_api_key(model, api_key)
+        if key is None and not model.startswith("g4f"):
+            raise RuntimeError(
+                f"未找到 LLM API key（model={model}）。请传 api_key 或设置环境变量"
+            )
 
-    result.llm_output = llm_output
-    (out / "llm_output.txt").write_text(llm_output, encoding="utf-8")
-    _step("LLM done", {"output_chars": len(llm_output)})
+        _step("calling LLM", {"model": model})
+        # 上游 llm 客户端签名：(apikey, model, user_content, system_content)
+        # g4f 例外：(model, system_content, user_content) — 在 _call_llm 里适配
+        user_content = f"{user_p}\n{srt_text}"
+        system_content = sys_p
 
-    # ---- extract_timestamps ----
-    timestamp_list = extract_timestamps(llm_output)
-    timestamp_list = timestamp_list[:max_highlights]
-    result.timestamp_list = timestamp_list
-    _step("timestamps extracted", {"count": len(timestamp_list)})
+        if model.startswith("g4f"):
+            # g4f_openai_call(model=..., system_content=..., user_content=...)
+            llm_output = llm_fn(model=model, system_content=system_content, user_content=user_content)
+        elif model.startswith("qwen"):
+            llm_output = llm_fn(key=key, model=model, user_content=user_content, system_content=system_content)
+        else:
+            # openai_call(apikey, model, user_content, system_content)
+            llm_output = llm_fn(apikey=key, model=model, user_content=user_content, system_content=system_content)
 
-    if not timestamp_list:
-        _step("no timestamps extracted — aborting")
+        result.llm_output = llm_output
+        (out / "llm_output.txt").write_text(llm_output, encoding="utf-8")
+        _step("LLM done", {"output_chars": len(llm_output)})
+
+        # ---- extract_timestamps ----
+        timestamp_list = extract_timestamps(llm_output)
+        timestamp_list = timestamp_list[:max_highlights]
+        result.timestamp_list = timestamp_list
+        _step("timestamps extracted", {"count": len(timestamp_list)})
+
+        if not timestamp_list:
+            _step("no timestamps extracted — aborting")
+            return result
+
+        # ---- video_clip 按时间戳切 ----
+        _step("clipping highlights via VideoClipper.video_clip")
+        highlights: list[HighlightClip] = []
+        for idx, (start_ms, end_ms) in enumerate(timestamp_list, start=1):
+            # 每个片段一个 timestamp_list 单元（video_clip 内部循环 all_ts）
+            single_ts = [[start_ms, end_ms]]
+            clip_video_file, message, clip_srt_text = audio_clipper.video_clip(
+                None, start_ost, end_ost, state,
+                output_dir=str(out),
+                timestamp_list=single_ts,
+                add_sub=False,
+            )
+            mp4 = Path(clip_video_file) if clip_video_file else None
+            # 上游 video_clip 返回的 clip_srt 是 SRT 文本内容（不是路径），
+            # 按"序号_起止.srt"命名写到 out/ 方便后续引用。
+            srt_path = None
+            if clip_srt_text:
+                srt_path = out / f"highlight_{idx:02d}_{start_ms}-{end_ms}ms.srt"
+                srt_path.write_text(clip_srt_text, encoding="utf-8")
+            # 抽 LLM 输出中此片段对应的文本行
+            text_match = _extract_clip_text(llm_output, start_ms, end_ms)
+            highlights.append(HighlightClip(
+                index=idx,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                duration_ms=end_ms - start_ms,
+                text=text_match,
+                mp4_path=mp4,
+                srt_path=srt_path,
+            ))
+            _step(f"clip {idx}/{len(timestamp_list)}", {
+                "start_ms": start_ms, "end_ms": end_ms,
+                "mp4": str(mp4) if mp4 else None,
+                "srt": str(srt_path) if srt_path else None,
+            })
+
+        result.highlights = highlights
+        _step("done", {"highlights": len(highlights), "output_dir": str(out)})
         return result
-
-    # ---- video_clip 按时间戳切 ----
-    _step("clipping highlights via VideoClipper.video_clip")
-    highlights: list[HighlightClip] = []
-    for idx, (start_ms, end_ms) in enumerate(timestamp_list, start=1):
-        # 每个片段一个 timestamp_list 单元（video_clip 内部循环 all_ts）
-        single_ts = [[start_ms, end_ms]]
-        clip_video_file, message, clip_srt_text = audio_clipper.video_clip(
-            None, start_ost, end_ost, state,
-            output_dir=str(out),
-            timestamp_list=single_ts,
-            add_sub=False,
-        )
-        mp4 = Path(clip_video_file) if clip_video_file else None
-        # 上游 video_clip 返回的 clip_srt 是 SRT 文本内容（不是路径），
-        # 按"序号_起止.srt"命名写到 out/ 方便后续引用。
-        srt_path = None
-        if clip_srt_text:
-            srt_path = out / f"highlight_{idx:02d}_{start_ms}-{end_ms}ms.srt"
-            srt_path.write_text(clip_srt_text, encoding="utf-8")
-        # 抽 LLM 输出中此片段对应的文本行
-        text_match = _extract_clip_text(llm_output, start_ms, end_ms)
-        highlights.append(HighlightClip(
-            index=idx,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            duration_ms=end_ms - start_ms,
-            text=text_match,
-            mp4_path=mp4,
-            srt_path=srt_path,
-        ))
-        _step(f"clip {idx}/{len(timestamp_list)}", {
-            "start_ms": start_ms, "end_ms": end_ms,
-            "mp4": str(mp4) if mp4 else None,
-            "srt": str(srt_path) if srt_path else None,
-        })
-
-    result.highlights = highlights
-    _step("done", {"highlights": len(highlights), "output_dir": str(out)})
-    return result
+    finally:
+        # VideoFileClip 的 ffmpeg reader 会一直持有文件句柄与内存，
+        # 函数返回或中途抛错都必须关闭（否则多次运行持续泄漏）
+        _v = (state or {}).get("video")
+        if _v is not None:
+            try:
+                _v.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _extract_clip_text(llm_output: str, start_ms: int, end_ms: int) -> str:

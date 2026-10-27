@@ -138,7 +138,13 @@ _LOGIN_PAGE_HTML = """<!DOCTYPE html>
     hint.textContent = '';
     if (!u || !p) { hint.textContent = '用户名和密码必填'; return; }
     post('/auth/login', { username: u, password: p }).then(function (r) {
-      if (r.ok) enter();
+      if (r.ok) {
+        if (r.must_change_password) {
+          hint.className = 'hint';
+          hint.textContent = '⚠️ 当前仍在使用默认密码！4 秒后进入工作台，请立即在右上角用户菜单中修改密码';
+          setTimeout(enter, 4000);
+        } else enter();
+      }
       else hint.textContent = '登录失败：' + (r.error || '未知错误') + (r._status ? ' [HTTP ' + r._status + ']' : '');
     }).catch(function (e) {
       hint.textContent = '网络错误：' + e;
@@ -150,7 +156,7 @@ _LOGIN_PAGE_HTML = """<!DOCTYPE html>
     var p = document.getElementById('bp').value;
     var hint = document.getElementById('bhint');
     hint.className = 'hint';
-    if (!u || p.length < 4) { hint.textContent = '用户名必填，密码至少 4 位'; return; }
+    if (!u || p.length < 8) { hint.textContent = '用户名必填，密码至少 8 位'; return; }
     post('/auth/bootstrap', { username: u, password: p }).then(function (r) {
       if (r.ok) enter();
       else hint.textContent = '创建失败：' + (r.error || '未知错误') + (r._status ? ' [HTTP ' + r._status + ']' : '');
@@ -271,7 +277,12 @@ def register_auth_endpoints(app: Any, auth: AuthStore, repo_root: Path,
         kick_note = (f"同账号旧会话 {old_sessions} 个已失效"
                      if old_sessions > 0 else "")
         auth.record_login_event(username, ip, "success", kick_note)
-        resp = JSONResponse({"ok": True, "user": user})
+        # 仍在使用默认密码 → 前端强提醒改密（服务端只提示不阻断）
+        must_change = auth.is_default_password(username)
+        if must_change:
+            log.warning("账号 %s 仍在使用默认密码，已提示修改", username)
+        resp = JSONResponse({
+            "ok": True, "user": user, "must_change_password": must_change})
         _set_session_cookie(resp, token)
         log.info("登录: %s%s", username, f"（踢掉旧会话 {old_sessions} 个）" if kick_note else "")
         return resp
@@ -364,9 +375,9 @@ def register_auth_endpoints(app: Any, auth: AuthStore, repo_root: Path,
             return JSONResponse(
                 {"ok": False, "error": "用户名和密码必填"}, status_code=400
             )
-        if len(password) < 4:
+        if len(password) < 8:
             return JSONResponse(
-                {"ok": False, "error": "密码至少 4 位"}, status_code=400
+                {"ok": False, "error": "密码至少 8 位"}, status_code=400
             )
         try:
             user = auth.create_user(username, username, password, is_admin=True)
@@ -412,9 +423,9 @@ def register_auth_endpoints(app: Any, auth: AuthStore, repo_root: Path,
             return JSONResponse(
                 {"ok": False, "error": "用户名和密码必填"}, status_code=400
             )
-        if len(password) < 4:
+        if len(password) < 8:
             return JSONResponse(
-                {"ok": False, "error": "密码至少 4 位"}, status_code=400
+                {"ok": False, "error": "密码至少 8 位"}, status_code=400
             )
         try:
             u = auth.create_user(username, display_name, password, is_admin=is_admin)
@@ -451,7 +462,7 @@ def register_auth_endpoints(app: Any, auth: AuthStore, repo_root: Path,
         if target != me_user.get("username") and not me_user.get("is_admin"):
             return JSONResponse({"ok": False, "error": "无权修改他人密码"},
                                 status_code=403)
-        if len(new_pw) < 4:
+        if len(new_pw) < 8:
             return JSONResponse({"ok": False, "error": "密码至少 4 位"},
                                 status_code=400)
         if not auth.update_user_password(target, new_pw):

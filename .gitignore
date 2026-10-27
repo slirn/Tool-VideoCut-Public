@@ -1,0 +1,33 @@
+# Python 运行产物
+__pycache__/
+*.py[cod]
+
+# 虚拟环境
+.venv/
+
+# 机器本地运行时状态，不入库
+#   data/   账号、会话、登录/封禁记录
+#   tasks/  任务数据（源视频与各阶段产物）
+#   config/ LLM 模型注册表（llm_config.py）
+data/
+tasks/
+config/
+
+# 运行时自动获取的资源（README：首次启动自动下载，不入库）
+font/
+
+# 热词库（缺失时由 tasklib/hotword_lib.py 自动创建，属用户数据）
+hotwords/
+
+# 临时文件与日志
+.temp/
+*.log
+
+# 测试与验证工具（内部 QA 用，不随公开仓库分发）
+tests/
+tools/
+
+# 系统杂项
+.DS_Store
+Thumbs.db
+Desktop.ini

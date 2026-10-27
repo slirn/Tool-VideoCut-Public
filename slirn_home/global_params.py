@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -70,21 +71,27 @@ def _load_json(path: Path) -> Any:
     return None
 
 
+# 模块级写锁：快照文件写入串行化（最后写者胜在这里是可接受的，
+# 加锁只是把「写一半被读到」的窗口也关掉）。
+_SNAPSHOT_LOCK = threading.RLock()
+
+
 def save_snapshot(repo_root: Path | str, kind: str, params: dict) -> dict | None:
     """把参数另存为全局快照。失败返回 None（**不影响主流程**）。"""
     try:
-        path = snapshot_path(repo_root, kind)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "_schema": _SCHEMA,
-            "updated_at": _now_iso(),
-            "params": params or {},
-        }
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                       encoding="utf-8")
-        tmp.replace(path)
-        return payload
+        with _SNAPSHOT_LOCK:
+            path = snapshot_path(repo_root, kind)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "_schema": _SCHEMA,
+                "updated_at": _now_iso(),
+                "params": params or {},
+            }
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                           encoding="utf-8")
+            tmp.replace(path)
+            return payload
     except Exception as e:  # noqa: BLE001
         log.warning("[global_params] 快照写入失败（已忽略）：%s", e)
         return None

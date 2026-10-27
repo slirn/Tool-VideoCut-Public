@@ -9,6 +9,7 @@ modelscope
 torch>=1.13
 torchaudio
 openai
-g4f
 dashscope
-curl_cffi
+
+# 可选：highlight_picker 的 g4f 前缀模型（非官方 LLM 通道）需要时再装
+# pip install g4f curl_cffi

@@ -54,6 +54,12 @@ EXTRACT_SUBTITLE_RELPATH_CANDIDATES = (
 # <repo_root>/funclip。runner 按候选顺序找 funclip 包的上级目录，insert sys.path[0]。
 _RUNNER_BODY = r'''
 import os, sys, runpy
+# 本脚本写在 %TEMP% 里运行 — 解释器会把脚本目录（Temp）插到 sys.path[0]，
+# Temp 里的同名垃圾文件（实测踩过 enum.py）会遮蔽标准库、在 `import funasr`
+# 的传递依赖里炸掉。先剥掉自己的目录再导入。
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path[:] = [p for p in sys.path
+               if os.path.abspath(p or os.getcwd()) != _here]
 # patch funasr 1.3.9 model registry（与 _launch_upstream.py 等价）
 import funasr  # noqa: F401
 from funasr.register import tables

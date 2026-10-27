@@ -30,9 +30,9 @@ def main() -> int:
     if not username:
         print("✗ 用户名不能为空")
         return 1
-    pw = getpass.getpass("密码（至少 4 位）: ")
-    if len(pw) < 4:
-        print("✗ 密码至少 4 位")
+    pw = getpass.getpass("密码（至少 8 位）: ")
+    if len(pw) < 8:
+        print("✗ 密码至少 8 位")
         return 1
     pw2 = getpass.getpass("再次输入密码: ")
     if pw != pw2:

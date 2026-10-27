@@ -98,10 +98,10 @@ def start_coarse_async(
 ) -> bool:
     """启动异步粗剪线程。已在跑 → False。
 
-    仿 ``compose_service.start_compose`` 模式：daemon 线程跑 run_stage4，
+    仿 ``compose_service.start_compose`` 模式：daemon 线程跑 run_stage5，
     通过 progress_cb 回调更新 _JOBS[(tid, pid)] 进度。
 
-    REQ-20261013-108：hl_index 可选 — 透传给 run_stage4 做单 highlight 粗剪。
+    REQ-20261013-108：hl_index 可选 — 透传给 run_stage5 做单 highlight 粗剪。
     """
     key = _job_key(task_id, project_id)
     with _JOBS_LOCK:
@@ -148,11 +148,11 @@ def start_coarse_async(
             extra={"start_ost_ms": start_ost_ms, "end_ost_ms": end_ost_ms},
         )
         try:
-            run_stage4(repo_root, task_id, project_id,
+            run_stage5(repo_root, task_id, project_id,
                        start_ost_ms=start_ost_ms, end_ost_ms=end_ost_ms,
                        progress_cb=_cb,
                        hl_index=hl_index)
-            # run_stage4 内部已通过 _cb 把 state 推到 done/failed；这里取最终
+            # run_stage5 内部已通过 _cb 把 state 推到 done/failed；这里取最终
             final = _JOBS.get(key, {})
             ok = final.get("state") == "done"
             execution_history.record_finish(
@@ -454,7 +454,7 @@ def _apply_trim_texts(highlight: dict, trims: dict | None,
 
     与 _resolve_line_windows 同口径：仅 unique sid 且有 trim target 的行替换。
     REQ-20261019-223：``edits``（line_edits 改字层）存在时优先于 trim
-    target（最终文字），且对未剪词的行也生效 — run_stage4 传 ``apply_edits=
+    target（最终文字），且对未剪词的行也生效 — run_stage5 传 ``apply_edits=
     False`` 的行表过来时，本函数是 SRT 文字的唯一替换点。
     返回浅拷贝 highlight（subtitle_lines 逐行浅拷贝），未命中时原样返回。
     """
@@ -563,7 +563,7 @@ def _apply_manual_state(highlight: dict, per: dict,
     return out
 
 
-def run_stage4(
+def run_stage5(
     repo_root: Path | str,
     task_id: str,
     project_id: str,
@@ -573,7 +573,10 @@ def run_stage4(
     progress_cb=None,
     hl_index: int | None = None,
 ) -> dict:
-    """Stage 5: 读 highlights.json + 源视频 → ``stage4/coarse_NN.{mp4,srt}``。
+    """Stage 5: 读 highlights.json + 源视频 → ``stage5_coarse/coarse_NN.{mp4,srt}``。
+
+    （历史命名 run_stage4 是早期阶段编号漂移的残留 — 产物目录与状态键
+    一直是 stage5_coarse；现统一为 run_stage5，旧名保留为兼容别名。）
 
     REQ-20261013-103：增加 ``progress_cb(event, payload)`` 注入；默认 None
     保持向后兼容（不传回调走原行为）。回调事件：
@@ -583,11 +586,9 @@ def run_stage4(
     - ``stage4_done`` / ``stage4_failed``: {"count": N}
 
     REQ-20261013-108：增加 ``hl_index`` 可选参数 — 仅跑一条 highlight
-    （Stage 4 预览跳转时使用）。``None`` / 0 = 全量（默认，保持向后兼容）；
+    （预览跳转时使用）。``None`` / 0 = 全量（默认，保持向后兼容）；
     int = 只处理 index == hl_index 的那一条，其他 highlight 的 coarse_NN.mp4
     文件**不会被删**（与全量跑行为一致 — 不动既有产物）。
-    """
-    """Stage 4: 读 highlights.json + 源视频 → ``stage4/coarse_NN.{mp4,srt}``。
 
     返回最新 pipeline.stage5_coarse 状态。
     """
@@ -964,7 +965,7 @@ def _cli() -> int:
     ap.add_argument("--end-ost", type=int, default=100)
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    state = run_stage4(
+    state = run_stage5(
         args.repo_root, args.task_id, args.project_id,
         start_ost_ms=args.start_ost, end_ost_ms=args.end_ost,
     )
@@ -1063,3 +1064,6 @@ def preview_playlist(
 
 if __name__ == "__main__":
     raise SystemExit(_cli())
+
+# 兼容别名：旧调用方（外部脚本 / 未同步的调用点）继续可用
+run_stage4 = run_stage5

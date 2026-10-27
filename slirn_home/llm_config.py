@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -104,6 +105,21 @@ def _validate_entry(id_: str, provider: str, base_url: str, api_key_env: str,
 
 
 # ---------- 读写 ----------
+
+# 模块级写锁：config/llm.json 的「读-改-写」序列串行化（与服务层锁纪律对齐）。
+_LLM_CFG_LOCK = threading.RLock()
+
+
+def _locked(fn):
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _LLM_CFG_LOCK:
+            return fn(*args, **kwargs)
+
+    return wrapper
+
 
 def _config_path(repo_root: Path | str) -> Path:
     return Path(repo_root) / LLM_CONFIG_REL
@@ -203,6 +219,7 @@ def get_current_entry(repo_root: Path | str) -> dict | None:
     return data["models"][0] if data["models"] else None
 
 
+@_locked
 def add_model(repo_root: Path | str, id_: str, provider: str, base_url: str,
               api_key_env: str, protocol: str = "openai", vision: bool = False) -> list[dict]:
     """添加模型注册项（id 重复拒绝）。返回新列表。
@@ -222,6 +239,7 @@ def add_model(repo_root: Path | str, id_: str, provider: str, base_url: str,
     return data["models"]
 
 
+@_locked
 def update_model(repo_root: Path | str, id_: str, new_id: str, provider: str,
                  base_url: str, api_key_env: str, protocol: str = "openai",
                  vision: bool = False) -> list[dict]:
@@ -247,6 +265,7 @@ def update_model(repo_root: Path | str, id_: str, new_id: str, provider: str,
     return data["models"]
 
 
+@_locked
 def remove_model(repo_root: Path | str, id_: str) -> list[dict]:
     """删除注册项；删的是当前模型 → 当前切到剩余第一个（无剩余则置空）。"""
     data = _load(repo_root)
@@ -262,6 +281,7 @@ def remove_model(repo_root: Path | str, id_: str) -> list[dict]:
     return data["models"]
 
 
+@_locked
 def use_model(repo_root: Path | str, id_: str) -> str:
     """设置当前使用的模型（必须已注册）。"""
     data = _load(repo_root)

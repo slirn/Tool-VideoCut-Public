@@ -15,7 +15,6 @@ import gradio as gr
 # → 启动 pyenv pythonw 副本争 7861，导致服务卡死。
 from llm.openai_api import openai_call
 from llm.qwen_api import call_qwen_model
-from llm.g4f_openai_api import g4f_openai_call
 from utils.trans_utils import extract_timestamps
 from introduction import top_md_1, top_md_3, top_md_4
 
@@ -300,6 +299,9 @@ if __name__ == "__main__":
         if model.startswith('gpt') or model.startswith('moonshot') or model.startswith('deepseek'):
             return openai_call(apikey, model, system_content, user_content+'\n'+srt_text)
         elif model.startswith('g4f'):
+            # g4f 已降为可选依赖（requirements.txt 注释说明）— 仅 original 模式
+            # 选 g4f 前缀模型时才需要，延迟导入避免没装时整个服务起不来。
+            from llm.g4f_openai_api import g4f_openai_call
             model = "-".join(model.split('-')[1:])
             return g4f_openai_call(model, system_content, user_content+'\n'+srt_text)
         else:
