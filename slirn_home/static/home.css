@@ -3922,6 +3922,56 @@ input[type="checkbox"]:focus-visible {
   border-top: 1px solid rgba(239, 68, 68, 0.2);
 }
 
+/* 2026-10-28：状态条逐阶段 chip 行（各节点状态 + 已执行时长） */
+.slirn-pipe-stage-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  padding: 6px 12px;
+  border-top: 1px dashed var(--border);
+}
+.slirn-pipe-stage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  cursor: default;
+}
+.slirn-pipe-stage-chip-running {
+  background: rgba(59, 130, 246, 0.15);
+  color: #2563eb;
+  font-weight: 600;
+  animation: slirn-chip-pulse 1.5s ease-in-out infinite;
+}
+.slirn-pipe-stage-chip-done { background: rgba(34, 197, 94, 0.14); color: #16a34a; }
+.slirn-pipe-stage-chip-skip { background: rgba(245, 158, 11, 0.16); color: #b45309; }
+.slirn-pipe-stage-chip-failed { background: rgba(239, 68, 68, 0.15); color: #dc2626; font-weight: 600; }
+.slirn-pipe-stage-chip-stopped { background: rgba(148, 163, 184, 0.18); color: #475569; }
+.slirn-pipe-stage-chip-dur { opacity: 0.85; font-variant-numeric: tabular-nums; }
+@keyframes slirn-chip-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+[data-theme="dark"] .slirn-pipe-stage-chip { background: rgba(148, 163, 184, 0.18); }
+[data-theme="dark"] .slirn-pipe-stage-chip-running { color: #60a5fa; }
+[data-theme="dark"] .slirn-pipe-stage-chip-done { color: #4ade80; }
+[data-theme="dark"] .slirn-pipe-stage-chip-skip { color: #fbbf24; }
+[data-theme="dark"] .slirn-pipe-stage-chip-failed { color: #f87171; }
+/* 2026-10-28：状态条断连告警行（轮询连续失败 ≥5 次挂出） */
+.slirn-pipe-status-conn {
+  padding: 6px 12px;
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+  font-size: 11px;
+  border-top: 1px dashed rgba(245, 158, 11, 0.4);
+}
+[data-theme="dark"] .slirn-pipe-status-conn { color: #fbbf24; }
+
 /* 暗主题 */
 @media (prefers-color-scheme: dark) {
   .slirn-pipe-panel, .slirn-pipe-status {
@@ -7166,4 +7216,50 @@ textarea.slirn-sv-mat-desc {
   color: var(--slirn-muted, #64748b);
   margin-left: 4px;
   white-space: nowrap;
+}
+
+/* ===== LLM 设置弹窗 · Token 用量区块 ===== */
+.slirn-llm-usage {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--slirn-border, #d0d7de);
+  border-radius: 8px;
+  padding: 8px 12px;
+  background: rgba(127, 127, 127, 0.04);
+}
+
+/* ===== 系统设置 / 探测结果 / 用量明细表格 ===== */
+.slirn-sys-probe-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.slirn-sys-probe-table th, .slirn-sys-probe-table td {
+  padding: 4px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--slirn-border, #d0d7de);
+  white-space: nowrap;
+}
+.slirn-sys-probe-table th {
+  color: var(--text-secondary, #64748b);
+  font-weight: 600;
+}
+
+/* ===== Token 用量独立页 ===== */
+#slirn-usage-detail { overflow-x: auto; margin-top: 8px; }
+#slirn-tab-usage table { min-width: 560px; }
+.slirn-usage-fltbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px solid var(--slirn-border, #d0d7de);
+}
+.slirn-usage-fltbar .slirn-input { width: auto; min-width: 110px; padding: 4px 8px; font-size: 12.5px; }
+.slirn-usage-fltbar select.slirn-input { max-width: 180px; }
+.slirn-usage-pager {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px;
+}
+.slirn-btn.slirn-btn-on {
+  background: var(--accent-solid, #667eea);
+  color: #fff;
+  border-color: var(--accent-solid, #667eea);
 }

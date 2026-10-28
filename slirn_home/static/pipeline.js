@@ -1242,7 +1242,24 @@
   }
   function pollStatus(taskId) {
     postJSON(SLIRN_API + '/pipeline_status', {task_id: taskId}).then(function(r) {
-      if (!r || !r.ok) return;
+      if (!r || !r.ok) {
+        // 2026-10-28：连续查询失败必须可见 —— 服务挂掉/断网时状态条不能
+        // 永远停在「运行中」装作没事。5 次（~7.5s）后挂告警行；轮询本身
+        // 继续跑（服务恢复即自动清掉告警：innerHTML 重渲染会移除该行）。
+        pollStatus._failCount = (pollStatus._failCount || 0) + 1;
+        if (pollStatus._failCount >= 5) {
+          var box = document.getElementById('slirn-pipe-status');
+          if (box && !box.hidden && !document.getElementById('slirn-pipe-status-conn')) {
+            var row = document.createElement('div');
+            row.id = 'slirn-pipe-status-conn';
+            row.className = 'slirn-pipe-status-conn';
+            row.textContent = '⚠ 与服务端失去连接（状态查询已连续失败 ' + pollStatus._failCount + ' 次）——服务恢复后自动继续';
+            box.appendChild(row);
+          }
+        }
+        return;
+      }
+      pollStatus._failCount = 0;
       var prevRunning = (pollStatus._lastState === 'running');
       var nowRunning = (r.state === 'running');
       pollStatus._lastState = r.state;
@@ -1279,6 +1296,33 @@
       btn.textContent = '▶ 从头跑';
       btn.setAttribute('title', '保存并按当前配置顺序执行所有阶段');
     }
+  }
+  // 2026-10-28：逐阶段 chip 行 — 各节点状态 + 已执行时长。时长由服务端每轮
+  // status 算好（running 的用读取时刻算 elapsed，随轮询自增）；缺 mark 的
+  // 阶段 = 本次运行未跑到（灰）。idle 态回显磁盘 history 里上次运行的耗时。
+  function _fmtStageDur(ms) {
+    if (ms == null || isNaN(ms)) return '';
+    var s = ms / 1000;
+    if (s < 60) return s.toFixed(1) + 's';
+    var m = Math.floor(s / 60);
+    return m + ':' + ('0' + Math.floor(s % 60)).slice(-2);
+  }
+  function renderStageChips(st) {
+    var marks = {};
+    (st.stages || []).forEach(function(m) { marks[m.key] = m; });
+    return STAGES.map(function(s) {
+      var m = marks[s.key];
+      var state = m ? (m.state || 'pending') : 'pending';
+      var icon = {running: '⏳', done: '✅', skip: '⏭', failed: '❌',
+                  stopped: '⏹', pending: '○'}[state] || '○';
+      var dur = m ? _fmtStageDur(m.duration_ms) : '';
+      var title = s.label + (m && m.error ? '：' + m.error : '');
+      return '<span class="slirn-pipe-stage-chip slirn-pipe-stage-chip-' + state + '"'
+        + ' title="' + escapeHtml(title) + '">'
+        + icon + ' ' + escapeHtml(s.label)
+        + (dur ? ' <span class="slirn-pipe-stage-chip-dur">' + dur + '</span>' : '')
+        + '</span>';
+    }).join('');
   }
   function renderStatusBar(st) {
     var box = document.getElementById('slirn-pipe-status');
@@ -1321,6 +1365,7 @@
       + '<progress class="slirn-pipe-status-bar" max="100" value="' + pct + '"></progress>'
       + '<button type="button" class="slirn-pipe-status-collapse" data-action="pipe-status-collapse" title="收起状态条（在流程配置头部按钮恢复显示）">▾</button>'
       + '</div>'
+      + '<div class="slirn-pipe-stage-chips">' + renderStageChips(st) + '</div>'
       + (last3 ? '<div class="slirn-pipe-status-log">' + last3 + '</div>' : '')
       + (st.error ? '<div class="slirn-pipe-status-err">' + escapeHtml(st.error) + '</div>' : '');
     // 重渲染时重新绑拖动事件（innerHTML 替换后旧 listener 不在了）

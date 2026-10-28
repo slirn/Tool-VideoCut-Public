@@ -1519,6 +1519,26 @@
         // 流程配置面板挂载（REQ-20260918-047 v2）：工作台内常驻纵向面板
         // 面板若已存在（同 tid + 有 innerHTML）→ 不重新加载，状态保留
         if (window.slirnPipelineMount) window.slirnPipelineMount(tid);
+        // 2026-10-28：合成进行中刷新页面 → 进度显示消失（轮询闭包随页面销毁）。
+        // 工作台（重新）加载后查一次合成状态：running 则把按钮/状态行接回轮询，
+        // 与点「合成」按钮同一条路径（服务端对在跑任务只回 job，不会重复起）。
+        var _rcResumeBtn = document.getElementById('slirn-rc-compose');
+        if (_rcResumeBtn && tid) {
+          postJSON(SLIRN_API + '/compose_rough_status', {task_id: tid}).then(function(s) {
+            if (!s || !s.ok || !s.job) return;
+            var j = s.job;
+            if (j.state !== 'running') return;
+            var pct = Math.max(1, Math.min(99, Math.round(j.progress || 0)));
+            _rcResumeBtn.textContent = '🎬 合成中… ' + pct + '%';
+            _rcResumeBtn.disabled = true;
+            var _st = document.getElementById('slirn-rc-status');
+            if (_st) {
+              _st.style.display = '';
+              _st.textContent = '⏳ 合成进行中 ' + pct + '%（页面刷新后自动接续）— 完成后此处自动显示预览';
+            }
+            rcWatchJob(tid, _rcResumeBtn);
+          });
+        }
       } else if (r && r.error) {
         toast('❌ ' + r.error, 'error');
       }
@@ -3162,6 +3182,86 @@
     card.appendChild(meta);
     bindSpeedControl(wrap.querySelector('video'));  // 倍速控件（REQ-20260916-014）
   }
+  // 2026-10-28：刷新左侧阶段条状态（轻量端点，不重拉整份工作台 HTML）。
+  // 背景：阶段条是服务端渲染的，阶段 job 跑完后不刷新就一直停在「执行中」，
+  // 用户表现为「这阶段明明做完了，却进不去下一阶段」。
+  function refreshWbStageStates(tid, opts) {
+    opts = opts || {};
+    return postJSON(SLIRN_API + '/wb_stage_states', {task_id: tid}).then(function(r) {
+      if (!r || !r.ok || !Array.isArray(r.states)) return null;
+      var panes = r.panes || [];
+      r.states.forEach(function(state, i) {
+        var el = document.querySelector('#slirn-tab-workbench .slirn-wb-stage[data-pane="' + panes[i] + '"]');
+        if (!el) return;
+        el.classList.remove('done', 'current', 'pending');
+        el.classList.add(state);
+        var mark = el.querySelector('.slirn-wb-stage-mark');
+        // done → ✓；current/pending → 阶段序号（与后端渲染口径一致）
+        if (mark) mark.textContent = (state === 'done') ? '✓' : String(i);
+      });
+      // 聚焦到当前阶段（服务端算的 focus）
+      if (typeof opts.focus !== 'undefined' && r.focus != null) {
+        var paneKey = panes[r.focus];
+        if (paneKey) {
+          var target = document.querySelector('#slirn-tab-workbench .slirn-wb-stage[data-pane="' + paneKey + '"]');
+          if (target) target.classList.add('active');
+        }
+      }
+      return r;
+    });
+  }
+  // 合成进度轮询（2026-10-28 从 rcCompose 抽出）：合成跑在服务端后台线程，
+  // 刷新页面只丢前端显示——工作台重载后用同一套轮询把进度接回来。
+  // btn._rcTimer 防重复起两个 interval（点按钮 + 自动接续撞车时先清旧的）。
+  function rcWatchJob(tid, btn) {
+    var status = document.getElementById('slirn-rc-status');
+    var setBtn = function(txt, dis) { btn.textContent = txt; btn.disabled = !!dis; };
+    var show = function(msg) { if (status) { status.style.display = ''; status.textContent = msg; } };
+    if (btn._rcTimer) { clearInterval(btn._rcTimer); }
+    btn._rcTimer = setInterval(function() {
+      postJSON(SLIRN_API + '/compose_rough_status', {task_id: tid}).then(function(s) {
+        if (!s || !s.ok || !s.job) return;
+        var j = s.job;
+        if (j.state === 'running') {
+          var pct = Math.max(1, Math.min(99, Math.round(j.progress || 0)));
+          setBtn('🎬 合成中… ' + pct + '%', true);
+          show('⏳ 合成进行中 ' + pct + '% — 可继续其它操作，完成后此处自动显示预览');
+          return;
+        }
+        clearInterval(btn._rcTimer); btn._rcTimer = null;
+        if (j.state === 'done') {
+          setBtn('🎬 重新合成粗剪视频', false);
+          show('✅ 粗剪成片已生成 — 下方预览整体效果');
+          toast('✅ 粗剪成片已生成');
+          rcInjectPreview(tid, j.result);
+          // 2026-10-28：刷新左侧阶段条（粗剪合成 → ✓ done，优化字幕 → current）
+          // 并按「完成后自动打开下一阶段」开关切过去；不切时给出手动入口。
+          refreshWbStageStates(tid, {focus: true}).then(function(st) {
+            if (!st) return;
+            var panes = st.panes || [];
+            var focusPane = panes[st.focus];
+            if (!focusPane || focusPane === 'rough_compose') return;
+            if (wbAutoNextOn()) {
+              switchWbPane(focusPane);
+              toast('✅ 「粗剪合成」完成 — 已自动打开下一阶段界面');
+            } else {
+              var stageEl = document.querySelector('#slirn-tab-workbench .slirn-wb-stage[data-pane="' + focusPane + '"]');
+              var label = focusPane;
+              if (stageEl) {
+                var titleEl = stageEl.querySelector('.slirn-wb-stage-title') || stageEl;
+                label = (titleEl.textContent || '').trim() || focusPane;
+              }
+              show('✅ 粗剪成片已生成 — 下一阶段「' + label + '」已就绪，点左侧阶段条继续');
+            }
+          });
+        } else {
+          setBtn('🎬 重新合成粗剪视频', false);
+          show('❌ ' + (j.error || '合成失败'));
+          toast('❌ ' + (j.error || '合成失败'), 'error');
+        }
+      });
+    }, 2000);
+  }
   function rcCompose(btn) {
     var tid = btn.getAttribute('data-task-id') || '';
     var status = document.getElementById('slirn-rc-status');
@@ -3178,29 +3278,7 @@
         return;
       }
       toast(r.toast || '🎬 合成已启动');
-      var timer = setInterval(function() {
-        postJSON(SLIRN_API + '/compose_rough_status', {task_id: tid}).then(function(s) {
-          if (!s || !s.ok || !s.job) return;
-          var j = s.job;
-          if (j.state === 'running') {
-            var pct = Math.max(1, Math.min(99, Math.round(j.progress || 0)));
-            setBtn('🎬 合成中… ' + pct + '%', true);
-            show('⏳ 合成进行中 ' + pct + '% — 可继续其它操作，完成后此处自动显示预览');
-            return;
-          }
-          clearInterval(timer);
-          if (j.state === 'done') {
-            setBtn('🎬 重新合成粗剪视频', false);
-            show('✅ 粗剪成片已生成 — 下方预览整体效果');
-            toast('✅ 粗剪成片已生成');
-            rcInjectPreview(tid, j.result);
-          } else {
-            setBtn('🎬 重新合成粗剪视频', false);
-            show('❌ ' + (j.error || '合成失败'));
-            toast('❌ ' + (j.error || '合成失败'), 'error');
-          }
-        });
-      }, 2000);
+      rcWatchJob(tid, btn);
     });
   }
   // ===== 粗剪合成 · 删除 / 字幕 SRT 操作（REQ-20260916-019） =====

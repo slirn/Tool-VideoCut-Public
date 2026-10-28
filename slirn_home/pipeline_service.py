@@ -102,6 +102,12 @@ class PipelineJob:
     # 必须带它 —— 鉴权中间件只认 cookie（X-Slirn-Auto 不是旁路），不带则 401。
     # 端点在启动后台线程前取到（contextvars 不跨线程），经 run_pipeline 落到这里。
     session_token: str = ""
+    # 2026-10-28：逐阶段执行标记（状态条节点 chip 用）：每个进入执行的阶段
+    # 一条 {key,label,state,started_at,finished_at,error}，state ∈
+    # running/done/skip/failed/stopped。since 跳过 / 未跑到的阶段不建条目，
+    # 前端按 STAGE_ORDER 补「未跑」灰 chip。写入 summary["stages"] 持久化，
+    # 服务重启后 idle 态也能回显上次运行各阶段耗时。
+    stage_marks: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -113,6 +119,7 @@ class PipelineJob:
             "error": self.error,
             "log": list(self.history),
             "summary": self.summary,
+            "stages": _marks_to_view(self.stage_marks),
         }
 
 
@@ -489,6 +496,61 @@ def _log(job: PipelineJob, stage: str, msg: str, level: str = "info") -> None:
     job.history.append(entry)
     if len(job.history) > 200:  # 防止内存爆炸
         job.history = job.history[-200:]
+
+
+# ---- 逐阶段执行标记（2026-10-28：状态条节点 chip 显示各阶段耗时/状态）----
+
+def _mark_stage_start(job: PipelineJob, key: str, label: str) -> None:
+    job.stage_marks.append({
+        "key": key, "label": label, "state": "running",
+        "started_at": time.time(), "finished_at": None, "error": "",
+    })
+
+
+def _mark_stage_end(job: PipelineJob, key: str, state: str, error: str = "") -> None:
+    for m in reversed(job.stage_marks):  # 同 key 至多一条 running（重跑才会同名）
+        if m["key"] == key:
+            m["state"] = state
+            m["finished_at"] = time.time()
+            m["error"] = error
+            return
+
+
+def _sweep_stage_marks(job: PipelineJob) -> None:
+    """收尾：仍 running 的条目按 job 终态定格（外层异常时防 chip 永远转圈）。"""
+    for m in job.stage_marks:
+        if m["state"] == "running":
+            m["state"] = "stopped" if job.state == "stopped" else "failed"
+            m["finished_at"] = time.time()
+
+
+def _marks_to_view(marks: list[dict]) -> list[dict]:
+    """stage_marks → 前端视图：running 用读取时刻算 elapsed（每轮轮询自增），
+    终态用 finished-started；不带原始时间戳。to_dict 与磁盘 history 回显共用。"""
+    now = time.time()
+    stages = []
+    for m in marks:
+        mm = {"key": m.get("key", ""), "label": m.get("label", ""),
+              "state": m.get("state", "")}
+        started = m.get("started_at")
+        if started:
+            end = m.get("finished_at") or (now if mm["state"] == "running" else started)
+            mm["duration_ms"] = int(max(0.0, end - started) * 1000)
+        if m.get("error"):
+            mm["error"] = m["error"]
+        stages.append(mm)
+    return stages
+
+
+def stages_from_last_history(outputs_dir: Path) -> list[dict]:
+    """磁盘 history 最后一条 summary 的 stages 视图（idle 态回显上次运行）。"""
+    try:
+        data = load_pipeline(outputs_dir) or {}
+        hist = data.get("history") or []
+        last = hist[-1] if hist else {}
+        return _marks_to_view(last.get("stages") or [])
+    except Exception:  # noqa: BLE001 — 回显失败不影响状态查询
+        return []
 
 
 def _check_prereq(outputs_dir: Path, required_files: list[str]) -> tuple[bool, str]:
@@ -1204,10 +1266,12 @@ def run_pipeline(tid: str, api: str, outputs_dir: Path, *,
                 # per-stage percent: 6 阶段均匀 → 100/6 ≈ 16.7 每阶段；留 20% 给收尾
                 job.percent = (idx + 1) / max(len(STAGE_ORDER), 1) * 80
                 _log(job, stage_key, f"== 开始阶段：{stage_label} ==")
+                _mark_stage_start(job, stage_key, stage_label)
                 stage_cfg = cfg_full.get(stage_key) or {}
                 handler = HANDLERS.get(stage_key)
                 if handler is None:
                     _log(job, stage_key, f"未知阶段 {stage_key}，跳过", "warn")
+                    _mark_stage_end(job, stage_key, "skip")
                     continue
                 try:
                     ok, msg = handler(tid, stage_cfg, outputs_dir, api, job)
@@ -1216,18 +1280,22 @@ def run_pipeline(tid: str, api: str, outputs_dir: Path, *,
                     job.state = "error"
                     job.error = f"{stage_label}：{e}"
                     _log(job, stage_key, f"❌ 异常：{e}", "error")
+                    _mark_stage_end(job, stage_key, "failed", str(e)[:300])
                     break
                 if not ok:
                     job.state = "error"
                     job.error = msg
                     _log(job, stage_key, f"❌ {msg}", "error")
+                    _mark_stage_end(job, stage_key, "failed", str(msg)[:300])
                     break
                 if msg == "skip":
                     # REQ-20260921-NNN-skip-warn：单独记录跳过的 stage，让前端
                     # 能区分「真跑通（✓ 绿）」vs「跳过（⚠️ 黄）」徽章
                     stages_skipped.append(stage_key)
+                    _mark_stage_end(job, stage_key, "skip")
                 else:
                     stages_done.append(stage_key)
+                    _mark_stage_end(job, stage_key, "done")
                 # v5 stop_after：run_mode=to_end 时 flow_stop 已被 validate_config 重置为 None；
                 # run_mode=stop_after 时按用户选的 stage_key 决定停点
                 if flow_stop and stage_key == flow_stop:
@@ -1247,6 +1315,7 @@ def run_pipeline(tid: str, api: str, outputs_dir: Path, *,
                          "warn")
                 else:
                     _log(job, "_end", "✅ 全部阶段完成", "ok")
+            _sweep_stage_marks(job)
             job.finished_at = time.time()
             job.percent = 100.0 if job.state == "done" else job.percent
             # summary + append history
@@ -1260,6 +1329,8 @@ def run_pipeline(tid: str, api: str, outputs_dir: Path, *,
                 "stages_skipped": stages_skipped,
                 "since": since,
                 "error": job.error,
+                # 2026-10-28：逐阶段耗时快照（idle 态回显上次运行用）
+                "stages": [dict(m) for m in job.stage_marks],
             }
             job.summary = summary
             append_history(outputs_dir, summary)
@@ -1267,6 +1338,7 @@ def run_pipeline(tid: str, api: str, outputs_dir: Path, *,
             log.exception("[pipeline][%s] 调度器异常", tid)
             job.state = "error"
             job.error = str(e)
+            _sweep_stage_marks(job)
             job.finished_at = time.time()
 
     threading.Thread(target=_run, name=f"pipeline-{tid}", daemon=True).start()

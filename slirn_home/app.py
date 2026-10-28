@@ -1233,6 +1233,17 @@ def _render_rough_compose_zone(task_id: str, t, mgr: TaskManager) -> str:
             f'style="margin-left:8px;">🗑️ 删除粗剪成片</button>'
         )
 
+    # ---- 2026-10-28：合成完成后显式给出「下一阶段」入口 ----
+    # 用户反馈：粗剪合成做完后，左侧阶段条不刷新（阶段条是服务端渲染的），
+    # 页面上也没有可点的按钮，导致「明明做完了却进不去下一阶段」。
+    # 合成产物存在 → 直接给一个跳到「优化字幕」的按钮（无需依赖自动跳转开关）。
+    next_stage_btn = ""
+    if artifact.exists():
+        next_stage_btn = (
+            '<button class="slirn-btn" data-action="wb-stage" data-pane="fine_review" '
+            'style="margin-left:8px;">✨ 下一阶段：优化字幕 →</button>'
+        )
+
     return f'''<div class="slirn-card" style="margin-top:16px;">
         <div class="slirn-panel-header"><div class="slirn-panel-title">🎥 粗剪合成</div></div>
         <div class="slirn-sub-meta">{stats_line}</div>
@@ -1244,6 +1255,7 @@ def _render_rough_compose_zone(task_id: str, t, mgr: TaskManager) -> str:
         <div class="slirn-task-actions" style="margin-top:14px;">
             <button class="slirn-btn slirn-btn-primary" id="slirn-rc-compose" data-action="compose-rough"
                     data-task-id="{_esc(task_id)}">🎬 {'重新合成粗剪视频' if artifact.exists() else '合成粗剪视频'}</button>
+            {next_stage_btn}
             {delete_btn}
         </div>
         <div id="slirn-rc-status" class="slirn-status-msg" style="display:none;"></div>
@@ -4408,6 +4420,29 @@ def _register_slirn_api(
         # 渲染放线程池：长任务工作台 HTML 数 MB、数百 ms 起，同步跑在事件循环里
         # 会卡住所有并发请求（anyio 会把 contextvar 拷进线程，鉴权上下文不丢）
         return _ok(await run_in_threadpool(_render_workbench, tid, mgr))
+
+    @app.app.post("/slirn/api/wb_stage_states")
+    async def wb_stage_states(body: dict = Body(default_factory=dict)):
+        """工作台左侧阶段条状态（轻量，不返回整份 HTML）。
+
+        2026-10-28：后台阶段（粗剪合成等）跑完后，左侧阶段条还停在「执行中」
+        ——整页 HTML 是服务端渲染的，前端不重拉就不会更新。用户表现为
+        「阶段做完了但进不去下一阶段」。前端在阶段 job 完成后调本端点刷新
+        阶段条（并按 auto-next 开关切到下一阶段）。
+        """
+        tid = (body.get("task_id") or "").strip()
+        if not tid:
+            return _err("缺少 task_id")
+        try:
+            t = mgr.get(tid)
+        except Exception as e:  # noqa: BLE001
+            return _err(f"任务不存在: {e}")
+        states = _wb_stage_states(t)
+        # 阶段序号与 _WB_STAGES 一致；focus = 第一个 current（全完成 → 末阶段）
+        focus = next((i for i, s in enumerate(states) if s == "current"),
+                     len(states) - 1)
+        return _ok("", states=states, focus=focus,
+                   panes=[k for k, *_rest in _WB_STAGES])
 
     # ========== REQ-20260919-061：精剪视频·四素材合成器 API ==========
 
@@ -9533,9 +9568,12 @@ def _register_slirn_api(
         disk_data = pipeline_service.load_pipeline(outputs_dir)
         disk_history = (disk_data or {}).get("history") or []
         if status is None:
-            # 从未跑过 → state=idle
+            # 从未跑过（或服务重启后内存 job 丢失）→ state=idle；
+            # stages 回显磁盘 history 最后一次运行的逐阶段耗时
+            from slirn_home.pipeline_service import stages_from_last_history as _stages_last
             return _ok("", state="idle", current_stage=None, percent=0.0,
-                       log=[], error=None, history=disk_history)
+                       log=[], error=None, history=disk_history,
+                       stages=_stages_last(outputs_dir))
         return _ok("", **status, history=status.get("history") or disk_history)
 
     @app.app.post("/slirn/api/pipeline_stop")
