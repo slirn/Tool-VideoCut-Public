@@ -3397,6 +3397,13 @@ def _render_create_task(repo_root: Path, edit=None) -> str:
             <div>点击选择视频文件 · 或把视频拖到这里</div>
             <div class="slirn-form-hint">支持 mp4 / avi / mkv / mov / webm / ts / mpeg（最大 10 GB）</div>
         </div>
+        <div style="display:flex; gap:8px; margin-top:12px;">
+            <input class="slirn-input" id="slirn-url-input"
+                   placeholder="或粘贴视频 URL（http/https），自动下载到服务器本地"
+                   style="flex:1;" />
+            <button class="slirn-btn" id="slirn-url-dl-btn" data-action="url-download">⬇ 下载</button>
+        </div>
+        <div id="slirn-url-progress" style="margin-top:8px; display:none;"></div>
         <div id="slirn-file-info-display" style="margin-top:12px;"></div>
     </div>
 
@@ -10261,6 +10268,34 @@ def _register_slirn_api(
                 "path": str(p).replace("\\", "/"),
             },
         )
+
+    # ---- URL 下载（新建任务的视频来源之二）：start / status / cancel ----
+    @app.app.post("/slirn/api/url_download_start")
+    async def url_download_start(body: dict = Body(default_factory=dict)):
+        from slirn_home import url_download
+        url = (body.get("url") or "").strip()
+        if not url:
+            return _err("请填写 URL")
+        try:
+            job_id = url_download.start_download(repo_root, url)
+        except ValueError as e:
+            return _err(str(e))
+        return _ok("", job={"job_id": job_id, "state": "running"})
+
+    @app.app.post("/slirn/api/url_download_status")
+    async def url_download_status(body: dict = Body(default_factory=dict)):
+        from slirn_home import url_download
+        job = url_download.job_status((body.get("job_id") or "").strip())
+        if job is None:
+            return _err("下载任务不存在或已过期")
+        return _ok("", job=job)
+
+    @app.app.post("/slirn/api/url_download_cancel")
+    async def url_download_cancel(body: dict = Body(default_factory=dict)):
+        from slirn_home import url_download
+        if not url_download.cancel_download((body.get("job_id") or "").strip()):
+            return _err("任务不在运行中（可能已完成或已取消）")
+        return _ok("")
 
     @app.app.post("/slirn/api/cut_preview")
     async def cut_preview(body: dict = Body(default_factory=dict)):

@@ -8992,6 +8992,15 @@
       document.body.appendChild(tmp);
       tmp.click();
     }
+    else if (action === 'url-download') {
+      var uin = document.getElementById('slirn-url-input');
+      var url = (uin && uin.value || '').trim();
+      if (!url) { toast('请先填写视频 URL', 'error'); return; }
+      startUrlDownload(url);
+    }
+    else if (action === 'url-download-cancel') {
+      cancelUrlDownload(target.getAttribute('data-job-id'));
+    }
   });
 
   // ===== 拖拽上传 — dropzone 区域支持把视频文件拖进来 =====
@@ -9009,6 +9018,115 @@
       toast('❌ 上传失败: ' + err, 'error');
     });
   }
+
+  // ===== URL 下载 — 新建任务的视频来源之二：粘贴链接，服务端流式下载 =====
+  var slirnUrlDl = null; // 当前轮询句柄 {id, timer}
+
+  function fmtBytes(n) {
+    if (n >= 1024 * 1024 * 1024) return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+    if (n >= 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+    return Math.max(1, Math.round(n / 1024)) + ' KB';
+  }
+
+  function stopUrlDlPoll() {
+    if (slirnUrlDl && slirnUrlDl.timer) clearInterval(slirnUrlDl.timer);
+    slirnUrlDl = null;
+    var b = document.getElementById('slirn-url-dl-btn');
+    if (b) b.disabled = false;
+  }
+
+  function urlDlFail(msg) {
+    stopUrlDlPoll();
+    var box = document.getElementById('slirn-url-progress');
+    if (box) {
+      box.style.display = 'block';
+      box.innerHTML = '<div class="slirn-form-hint" style="color:#c0392b;">❌ ' + msg + '</div>';
+    }
+  }
+
+  function pollUrlDl() {
+    if (!slirnUrlDl) return;
+    var id = slirnUrlDl.id;
+    postJSON(SLIRN_API + '/url_download_status', {job_id: id}).then(function(j) {
+      if (!slirnUrlDl || slirnUrlDl.id !== id) return;   // 已被新下载顶掉
+      var job = j.job || {};
+      var box = document.getElementById('slirn-url-progress');
+      if (!box) { stopUrlDlPoll(); return; }             // 页面已重渲染（进度条随 DOM 消失）
+      if (job.state === 'running') {
+        var rc = job.received_bytes || 0, tot = job.total_bytes;
+        var pct = tot ? Math.floor(rc / tot * 100) : null;
+        box.style.display = 'block';
+        box.innerHTML =
+          '<div class="slirn-form-hint">⬇ 正在下载 <b>' + escapeHtml(job.name || '…') +
+          '</b> — ' + (pct !== null ? pct + '% · ' : '') + fmtBytes(rc) +
+          (tot ? ' / ' + fmtBytes(tot) : '') + '</div>' +
+          '<button class="slirn-btn" data-action="url-download-cancel" data-job-id="' +
+          escapeAttr(id) + '" style="margin-top:6px;">✖ 取消下载</button>';
+        return;
+      }
+      // 终态：先停轮询（done 分支的 handleResp 会整块重渲染，杀掉进度条 DOM）
+      stopUrlDlPoll();
+      if (job.state === 'done' && job.path) {
+        box.innerHTML = '<div class="slirn-form-hint">✅ 下载完成，正在解析视频…</div>';
+        window.slirnSelectedFile = job.path;
+        postJSON(SLIRN_API + '/file_selected', {path: job.path}).then(function(r) {
+          handleResp(r, 'slirn-tab-create');   // 与上传完成同链路：重渲染 + 回填播放器
+        }).catch(function(err) {
+          toast('❌ 解析失败: ' + err, 'error');
+        });
+      } else if (job.state === 'cancelled') {
+        box.innerHTML = '<div class="slirn-form-hint">已取消下载</div>';
+      } else {
+        box.style.display = 'block';
+        box.innerHTML = '<div class="slirn-form-hint" style="color:#c0392b;">❌ ' +
+          escapeHtml(job.error || '下载失败') + '</div>';
+      }
+    }).catch(function(err) {
+      urlDlFail('状态查询失败: ' + err);
+    });
+  }
+
+  function startUrlDownload(url) {
+    stopUrlDlPoll();  // 顶掉上一个未完成的轮询
+    var box = document.getElementById('slirn-url-progress');
+    if (box) {
+      box.style.display = 'block';
+      box.innerHTML = '<div class="slirn-form-hint">⬇ 正在建立下载…</div>';
+    }
+    var btn = document.getElementById('slirn-url-dl-btn');
+    if (btn) btn.disabled = true;
+    postJSON(SLIRN_API + '/url_download_start', {url: url}).then(function(j) {
+      slirnUrlDl = {id: (j.job || {}).job_id, timer: null};
+      slirnUrlDl.timer = setInterval(pollUrlDl, 1000);
+      pollUrlDl();
+    }).catch(function(err) {
+      urlDlFail(err);
+    });
+  }
+
+  function cancelUrlDownload(jobId) {
+    if (!jobId) return;
+    postJSON(SLIRN_API + '/url_download_cancel', {job_id: jobId}).then(function() {
+      toast('已请求取消，正在终止…');
+    }).catch(function(err) {
+      toast('取消失败: ' + err, 'error');
+    });
+  }
+
+  // URL 输入框回车 = 点下载；用量页筛选框回车 = 筛选
+  document.addEventListener('keydown', function(e) {
+    if (e.key !== 'Enter') return;
+    var el = e.target;
+    if (el && el.id === 'slirn-url-input') {
+      e.preventDefault();
+      var b = document.getElementById('slirn-url-dl-btn');
+      if (b && !b.disabled) b.click();
+    } else if (el && el.classList && el.classList.contains('slirn-usage-flt')) {
+      e.preventDefault();
+      USAGE_STATE.page = 1;
+      loadUsageDetail();
+    }
+  });
   document.addEventListener('dragover', function(e) {
     var dz = e.target && e.target.closest && e.target.closest('.slirn-dropzone');
     if (!dz) return;

@@ -81,6 +81,9 @@ if __name__ == "__main__":
                 server_name=server_name,
                 inbrowser=False if args.listen else True,
                 theme=gr.themes.Soft(),
+                # URL 下载的视频落在仓库根 downloads/（任务符号链接指向它，必须持久；
+                # 不加白名单的话 /gradio_api/file= 会 403，预览播放器无画面）
+                allowed_paths=[str(_root / "downloads")],
                 css=slirn_home_static_css(),
                 # 不再传 head= — Gradio 6.17.3 的 launch(head=...) 不会渲染到页面 <head>。
                 # JS 注入改在 gr.HTML 组件的 head= 参数上（见 slirn_home/app.py build_app）。

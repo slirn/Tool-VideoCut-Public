@@ -19,6 +19,9 @@ font/
 # 热词库（缺失时由 tasklib/hotword_lib.py 自动创建，属用户数据）
 hotwords/
 
+# URL 下载的视频（新建任务的视频来源之二，属用户数据；任务符号链接指向这里）
+downloads/
+
 # 临时文件与日志
 .temp/
 *.log
