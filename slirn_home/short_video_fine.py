@@ -443,6 +443,15 @@ def import_params_json(repo_root: Path | str, task_id: str, project_id: str,
         raise svc.ShortVideoError("JSON 顶层必须是对象")
     schema = payload.get("_schema")
     if schema != _PARAMS_IO_SCHEMA:
+        # REQ-20261028-NNN：schema 2/3/4 且无 _source_project_id → 长视频
+        # 「精剪合成」工作台导出的 fine_params_*.json。两套参数体系刻意保持
+        # 独立（横/竖版画布坐标、参数组集都不同，不能互导），报错指出文件
+        # 来源与去处，而不是甩一个版本号让用户猜。
+        if schema in (2, 3, 4) and "_source_project_id" not in payload:
+            raise svc.ShortVideoError(
+                "这是长视频「精剪合成」导出的参数文件（fine_params_*.json），"
+                "长视频与短视频的参数相互独立、不能混用；"
+                "请在精剪合成工作台的「导入参数」使用")
         raise svc.ShortVideoError(
             f"参数文件 _schema 不兼容（当前仅支持 {_PARAMS_IO_SCHEMA}，文件为 {schema}）")
     for key in (*_PARAMS_IO_GROUPS, "preview"):

@@ -5966,6 +5966,21 @@ def _register_slirn_api(
             return _err("JSON 顶层必须是对象")
         schema = payload.get("_schema")
         if schema not in (2, 3, 4):
+            # REQ-20261028-NNN：schema=1 且带 _source_project_id → 短视频精剪
+            # （Stage 6）导出的 sv_fine_params_*.json。长/短视频两套参数体系
+            # 刻意保持独立（横/竖版画布坐标、参数组集都不同，不能互导），
+            # 报错要指出文件来源与去处，而不是甩一个版本号让用户猜。
+            if "_source_project_id" in payload:
+                return _err(
+                    "这是「短视频精剪」导出的参数文件（sv_fine_params_*.json），"
+                    "长视频与短视频的参数相互独立、不能混用；"
+                    "请回到对应的短视频项目精剪处理区导入"
+                )
+            if "profiles" in payload:
+                return _err(
+                    "这是「引用参数」模板库文件，不是可导入的参数文件；"
+                    "请通过工作台的「📥 引用参数」按钮选用模板"
+                )
             return _err(
                 # REQ-20260921-NNN-preview-export：v4 加 preview
                 f"参数文件 _schema 不兼容（当前仅支持 2/3/4，文件为 {schema}）"
