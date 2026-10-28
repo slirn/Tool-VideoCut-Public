@@ -29,8 +29,8 @@ log = logging.getLogger(__name__)
 
 FINE_JSON = "fine_revision.json"
 
-# 分批行数：热词替换输出很小（只有需要替换的行），40 行/批安全
-BATCH_SIZE = 40
+# 分批：与 revision_service 同口径 — pack_batches 按上下文预算整行打包；
+# anthropic 协议必须显式传 max_tokens（默认 4096，大批可能截断），调用处传 8192
 
 FINE_SYSTEM = (
     "你是字幕热词校对助手。用户给你视频字幕行列表（JSON 数组，每项含行 id 与文本）"
@@ -213,7 +213,8 @@ def start_job(
 
             sub_prompt = build_user_prompt(task_name, hotwords, batch)
             try:
-                raw = _call_llm(FINE_SYSTEM, sub_prompt, entry)
+                raw = _call_llm(FINE_SYSTEM, sub_prompt, entry, max_tokens=8192,
+                                usage_ctx={"task_id": task_id, "stage": "精剪校对"})
                 return parse_replacements(raw, batch, hotwords)
             except ValueError as e:
                 if len(batch) == 1:
@@ -224,13 +225,25 @@ def start_job(
                 return {**_analyze(batch[:mid]), **_analyze(batch[mid:])}
 
         try:
-            batches = [lines[k:k + BATCH_SIZE] for k in range(0, len(lines), BATCH_SIZE)] or [[]]
+            from slirn_home.revision_service import pack_batches, _effective_workers
+            batches = pack_batches(lines, entry)
+            # 并发跑批（与修订/优化同口径）：撞限流由 _chat_completion 的
+            # _pause_all 联动退避，取代原批间 sleep 0.6s。replaced 按行 id
+            # 归并，批序无关（落盘按 lines 顺序遍历）；确定性失败上抛（原语义）。
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
             replaced: dict[str, list[dict]] = {}
-            for bi, batch in enumerate(batches):
-                _stage(f"调用大模型 ({bi + 1}/{len(batches)})", bi / max(1, len(batches)) * 100)
-                replaced.update(_analyze(batch))
-                if bi < len(batches) - 1:
-                    time.sleep(0.6)  # 批间间隔，降低限流概率
+            if batches:
+                with ThreadPoolExecutor(
+                        max_workers=max(1, min(_effective_workers(), len(batches))),
+                        thread_name_prefix="fine") as pool:
+                    futs = [pool.submit(_analyze, b) for b in batches]
+                    done = 0
+                    for fut in as_completed(futs):
+                        replaced.update(fut.result())
+                        done += 1
+                        _stage(f"调用大模型 ({done}/{len(batches)})",
+                               done / len(batches) * 98.0)
 
             _stage("保存结果", 99.0)
             entries = []

@@ -44,9 +44,75 @@ USER_DECISIONS: dict[str, str] = {
     "fix": "内容更正",
 }
 
-# 长字幕分批：每批段数（qwen-plus 上下文/输出长度安全边际；
-# 20 段/批输出约 2K tokens，留足余量，解析失败还会减半重试 — REQ-20260915-007）
-BATCH_SIZE = 20
+# 长字幕分批：按上下文预算**整行打包**（pack_batches），不再固定段数。
+# 短行多装、长行少装，充分用满上下文、调用次数最少。预算三来源：
+# ① 输入侧：探测到的上下文窗口（settings context_cache，llm_probe 探测）
+#    减去输出预留与安全余量；② 输出侧：max_tokens=8192 截断线（实测
+#    data/llm_usage_log.jsonl 每段输出 70-95 tokens，这是主要约束）；③ 质量
+# 上限：批太长模型中后段易敷衍。实测固定开销 ≈800 tokens/批、短行 ≈60。
+BATCH_FIXED_TOK = 800       # 每批固定开销（系统提示 + 任务说明）
+BATCH_LINE_MIN_TOK = 60     # 每行输入保底（短字幕行实测）
+BATCH_LINE_OUT_TOK = 95     # 每行输出上界（截断线推导依据）
+BATCH_OUT_CAP = 8192        # _analyze 传给 anthropic 协议的 max_tokens
+BATCH_MARGIN_TOK = 2048     # 上下文安全余量（分词偏差 + 记账误差）
+BATCH_MIN, BATCH_MAX = 10, 80   # 段数下限（太小浪费请求）/ 上限（质量）
+DEFAULT_CTX_TOKENS = 32768  # 未探测时的保守假设（在售模型几乎都 ≥32K）
+
+
+def suggest_batch(context_tokens: int) -> int:
+    """由上下文窗口推导每批段数上限：输入侧与输出侧（截断线）取小。"""
+    n_ctx = (int(context_tokens) - BATCH_OUT_CAP - BATCH_MARGIN_TOK
+             - BATCH_FIXED_TOK) // BATCH_LINE_MIN_TOK
+    n_out = int(BATCH_OUT_CAP * 0.85) // BATCH_LINE_OUT_TOK  # 输出留 15% 余量
+    return max(BATCH_MIN, min(n_ctx, n_out, BATCH_MAX))
+
+
+def _effective_context(entry: dict | None) -> int:
+    """生效的上下文窗口：探测缓存（settings context_cache）→ 保守默认。"""
+    try:
+        from slirn_home import settings_service
+        hit = settings_service.get_context(None, str((entry or {}).get("id") or ""))
+        if hit:
+            return int(hit["tokens"])
+    except Exception:  # noqa: BLE001 — 缓存读取失败退默认，不影响分批
+        pass
+    return DEFAULT_CTX_TOKENS
+
+
+def _line_tokens(line) -> int:
+    """单行输入的 token 估算：文本长度 + JSON 标记开销，中文按 0.7 token/字符
+    保守放大（实测中文 ~1.5 字符/token）；短行不小于保底值。"""
+    text = str(line.get("text") or "") if isinstance(line, dict) else str(line or "")
+    return max(BATCH_LINE_MIN_TOK, int((len(text) + 30) * 0.7))
+
+
+def pack_batches(lines: list, entry: dict | None = None) -> list[list]:
+    """按上下文预算整行打包：逐行累加，预算满或达段数上限即切批。
+
+    替代固定段数切批 — 行数由「行内容实际大小」决定：短行一批装几十行、
+    长行少装，在输出截断线内尽量用满上下文，调用次数最少。空列表返回
+    [[]]（沿用原切批语义，调用方 or [[]] 可去掉）。
+    """
+    ctx = _effective_context(entry)
+    cap = suggest_batch(ctx)
+    budget = ctx - BATCH_OUT_CAP - BATCH_MARGIN_TOK  # 每批输入可用额度
+    batches: list[list] = []
+    acc: list = []
+    used = BATCH_FIXED_TOK
+    for line in lines or []:
+        t = _line_tokens(line)
+        if acc and (used + t > budget or len(acc) >= cap):
+            batches.append(acc)
+            acc, used = [], BATCH_FIXED_TOK
+        acc.append(line)
+        used += t
+    if acc:
+        batches.append(acc)
+    return batches or [[]]
+
+# 并发批次 worker 数：4 个在途请求。撞限流由 _chat_completion 的全局退避
+# （_pause_all）联动各 worker 一起等待，不会报错，最多退化为近似串行。
+WORKERS = 4
 
 # 分析严谨性级别（REQ-20260916-003，用户必选）：
 # - prompt 侧：badge/title/stance/criteria 注入系统提示词，决定模型挑毛病的严格程度
@@ -212,18 +278,29 @@ class LLMBusinessError(RuntimeError):
     """
 
 
+class LLMTruncatedError(ValueError):
+    """输出被 max_tokens 截断 — 上层减半重试（subclass ValueError 保持既有
+    except 兼容）。携带 usage：这次调用的输入**已被计费**，_chat_completion
+    据此记账后再上抛（减半重试白调的那次不能丢账）。"""
+
+    def __init__(self, msg: str, usage: tuple[int, int] = (0, 0)):
+        super().__init__(msg)
+        self.usage = usage
+
+
 def _is_retryable_code(code: str) -> bool:
     c = str(code or "")
     return (c in ("rate_limit_exceeded", "rate_limit_error", "overloaded_error")
             or c.startswith("Throttling"))
 
 
-def _extract_openai_resp(resp, entry: dict) -> str:
-    """解析 OpenAI 兼容响应 → 助手正文。
+def _extract_openai_resp(resp, entry: dict) -> tuple[str, tuple[int, int]]:
+    """解析 OpenAI 兼容响应 → (助手正文, (输入, 输出) tokens)。
 
     网关业务失败（欠费/限流/Key 无效）返回非 200 + error 对象而非抛异常 —
     必须先查状态码，否则真实错误被掩盖（REQ-20260915-007）。
     输出被截断（finish_reason=length）→ ValueError（上层减半重试）。
+    usage 来自响应体（llm_usage 记账用），网关未回时为 (0, 0)。
     """
     model = entry.get("id", "?")
     provider = entry.get("provider", "未知厂商")
@@ -255,18 +332,23 @@ def _extract_openai_resp(resp, entry: dict) -> str:
         raise RuntimeError(f"{provider}（{model}）响应缺少 choices 正文")
     first = choices[0] if isinstance(choices[0], dict) else {}
     if first.get("finish_reason") == "length":
-        raise ValueError("模型输出被截断（finish_reason=length），需减小批量重试")
+        from slirn_home import llm_usage
+        raise LLMTruncatedError(
+            "模型输出被截断（finish_reason=length），需减小批量重试",
+            llm_usage.extract_usage_openai(data))
     content = (first.get("message") or {}).get("content")
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError(f"{provider}（{model}）响应正文为空")
-    return content
+    from slirn_home import llm_usage
+    return content, llm_usage.extract_usage_openai(data)
 
 
-def _extract_anthropic_resp(resp, entry: dict) -> str:
-    """解析 Anthropic 协议响应（``{base_url}/v1/messages``）→ 助手正文。
+def _extract_anthropic_resp(resp, entry: dict) -> tuple[str, tuple[int, int]]:
+    """解析 Anthropic 协议响应（``{base_url}/v1/messages``）→ (正文, (输入, 输出) tokens)。
 
     错误体 ``{"type":"error","error":{"type","message"}}``；截断
     ``stop_reason == "max_tokens"`` → ValueError（上层减半重试）。
+    usage 来自响应体（llm_usage 记账用），网关未回时为 (0, 0)。
     """
     model = entry.get("id", "?")
     provider = entry.get("provider", "未知厂商")
@@ -301,16 +383,62 @@ def _extract_anthropic_resp(resp, entry: dict) -> str:
             if isinstance(p, dict) and p.get("type") == "text"
         )
     if data.get("stop_reason") == "max_tokens":
-        raise ValueError("模型输出被截断（stop_reason=max_tokens），需减小批量重试")
+        from slirn_home import llm_usage
+        raise LLMTruncatedError(
+            "模型输出被截断（stop_reason=max_tokens），需减小批量重试",
+            llm_usage.extract_usage_anthropic(data))
     if not text.strip():
         raise RuntimeError(f"{provider}（{model}）响应正文为空")
-    return text
+    from slirn_home import llm_usage
+    return text, llm_usage.extract_usage_anthropic(data)
+
+
+# 全局限流联动（WORKERS 并发下用）：任一调用撞限流/网络错误 → 记录退避截止
+# 时间，所有 worker 发起下一笔前先等过这个时间，避免集体连环撞限流。
+_PAUSE_LOCK = threading.Lock()
+_PAUSE_UNTIL = 0.0
+
+
+def _pause_all(seconds: float) -> None:
+    global _PAUSE_UNTIL
+    with _PAUSE_LOCK:
+        _PAUSE_UNTIL = max(_PAUSE_UNTIL, time.time() + seconds)
+
+
+def _effective_workers() -> int:
+    """生效并发数：系统设置(config/settings.json llm_workers) → 出错回退 WORKERS。"""
+    try:
+        from slirn_home import settings_service
+        return settings_service.get_workers()
+    except Exception:  # noqa: BLE001 — 设置模块不可用时按默认并发跑
+        return WORKERS
+
+
+def _record_usage(entry: dict, p_tok: int, c_tok: int,
+                  usage_ctx: dict | None, fallback_text: str = "",
+                  elapsed_ms: int = 0) -> None:
+    """把一笔调用的 usage 记进账本（含逐笔明细）。网关没回 usage（0,0）→ 按字符粗估打标记。"""
+    from slirn_home import llm_usage
+    estimated = False
+    if not p_tok and not c_tok:
+        p_tok = llm_usage.estimate_tokens(fallback_text)
+        estimated = True
+    llm_usage.record(entry.get("id", "?"), p_tok, c_tok, usage_ctx,
+                     estimated=estimated, elapsed_ms=elapsed_ms)
+
+
+def _wait_pause() -> None:
+    with _PAUSE_LOCK:
+        t = _PAUSE_UNTIL - time.time()
+    if t > 0:
+        time.sleep(t)
 
 
 def _chat_completion(entry: dict, messages: list[dict],
                      retries: int = 2, timeout: float = 180.0,
                      max_tokens: int | None = None,
-                     temperature: float | None = None) -> str:
+                     temperature: float | None = None,
+                     usage_ctx: dict | None = None) -> str:
     """按注册项协议调用大模型（httpx，gradio 既有依赖）— REQ-20260916-001 双协议。
 
     entry: llm_config 注册项 {"id","provider","base_url","api_key_env","protocol"}
@@ -363,19 +491,33 @@ def _chat_completion(entry: dict, messages: list[dict],
         # None（默认）不传 → 其他调用方行为不变
         body["temperature"] = float(temperature)
 
+    _t0 = time.time()
     last_err: Exception | None = None
     for attempt in range(retries + 1):
+        _wait_pause()  # 限流联动窗口：别的 worker 刚撞限流 → 这里先等再发
         try:
             resp = httpx.post(url, json=body, headers=headers, timeout=timeout)
-            return extract(resp, entry)
+            content, (p_tok, c_tok) = extract(resp, entry)
+            _record_usage(entry, p_tok, c_tok, usage_ctx,
+                          fallback_text="".join(str(m.get("content", "")) for m in messages),
+                          elapsed_ms=int((time.time() - _t0) * 1000))
+            return content
+        except LLMTruncatedError as te:
+            # 输入已被计费（哪怕输出截断）— 精确 usage 可得时先记账再上抛，
+            # 不做字符估算（输出被掐，估不准，宁缺勿错）
+            if te.usage and te.usage != (0, 0):
+                _record_usage(entry, te.usage[0], te.usage[1], usage_ctx,
+                              elapsed_ms=int((time.time() - _t0) * 1000))
+            raise
         except ValueError:
-            raise  # 截断等输出质量问题：同批重试无意义，直接交上层减半
+            raise  # 其他输出质量问题：同批重试无意义，直接交上层减半
         except LLMBusinessError:
             raise  # 确定性业务失败（欠费/Key 无效等）：重试同样失败，直接上抛
         except Exception as e:  # noqa: BLE001 — httpx 异常类型不稳定
             last_err = e
             if attempt < retries:
                 wait = 2.0 * (attempt + 1)
+                _pause_all(wait)  # 并发 worker 一起等，别在他重试时还往枪口上撞
                 log.warning("[revise] LLM 调用失败（第 %d 次，%.0fs 后重试）: %s", attempt + 1, wait, e)
                 time.sleep(wait)
     raise RuntimeError(f"网络/服务端错误（重试 {retries} 次后仍失败）: {last_err}")
@@ -383,13 +525,15 @@ def _chat_completion(entry: dict, messages: list[dict],
 
 def _call_llm(system: str, user: str, entry: dict | None = None, retries: int = 2,
               max_tokens: int | None = None,
-              temperature: float | None = None) -> str:
+              temperature: float | None = None,
+              usage_ctx: dict | None = None) -> str:
     """调用注册的大模型 → 文本响应。瞬时失败退避重试（2s/4s）。
 
     entry: llm_config 注册项（app.py 传入用户选择的当前模型，REQ-20260915-008）；
     None 时回退默认注册项 + SLIRN_LLM_MODEL 环境变量覆盖模型 id（向后兼容）。
     max_tokens: anthropic 协议输出上限（None → 4096 默认）。
     temperature: None 不传（各端默认）；需要稳定复现的整理类任务可显式压低。
+    usage_ctx: 用量记账上下文 {"task_id":…, "stage":…}（llm_usage 维度，见模块注释）。
     """
     if entry is None:
         from slirn_home.llm_config import DEFAULT_MODELS
@@ -402,7 +546,8 @@ def _call_llm(system: str, user: str, entry: dict | None = None, retries: int = 
     ]
     try:
         return _chat_completion(entry, messages, retries=retries,
-                                max_tokens=max_tokens, temperature=temperature)
+                                max_tokens=max_tokens, temperature=temperature,
+                                usage_ctx=usage_ctx)
     except ValueError:
         raise  # 截断：上层减半重试
     except Exception as e:  # noqa: BLE001
@@ -444,6 +589,7 @@ def _call_llm_vision(
     entry: dict | None = None,
     retries: int = 2,
     timeout: float = 180.0,
+    usage_ctx: dict | None = None,
 ) -> str:
     """REQ-20260919-061 Phase C：调多模态模型（图片+文本）→ 文本响应。
 
@@ -524,10 +670,16 @@ def _call_llm_vision(
         extract = _extract_openai_resp
 
     last_err: Exception | None = None
+    _t0 = time.time()
     for attempt in range(retries + 1):
+        _wait_pause()  # 与 text 路径共享限流联动窗口
         try:
             resp = httpx.post(url, json=body, headers=headers, timeout=timeout)
-            return extract(resp, entry)
+            content, (p_tok, c_tok) = extract(resp, entry)
+            _record_usage(entry, p_tok, c_tok, usage_ctx,
+                          fallback_text=f"{system}\n{user_text}",
+                          elapsed_ms=int((time.time() - _t0) * 1000))
+            return content
         except ValueError:
             raise  # 截断等输出质量问题
         except LLMBusinessError:
@@ -536,6 +688,7 @@ def _call_llm_vision(
             last_err = e
             if attempt < retries:
                 wait = 2.0 * (attempt + 1)
+                _pause_all(wait)
                 log.warning("[vision] LLM 调用失败（第 %d 次，%.0fs 后重试）: %s", attempt + 1, wait, e)
                 time.sleep(wait)
     raise RuntimeError(f"网络/服务端错误（重试 {retries} 次后仍失败）: {last_err}")
@@ -622,6 +775,8 @@ def start_job(
     entry: dict | None = None,
     rigor: str = "high",
     custom_prompt: str | None = None,
+    auto: bool = False,
+    auto_session_id: str = "",
 ) -> bool:
     """启动大模型分析线程。已在跑 → False。成功后写 revision.json（决策重置 pending，
     split 行的「切分修剪后内容」自动预填建议文本 — REQ-20260916-010）。
@@ -633,6 +788,10 @@ def start_job(
     非法值直接拒绝；级别写入 meta 留痕并注入系统提示词。
     custom_prompt：rigor=custom 时的用户自定义提示词（空白回退默认底稿），
     实际使用的提示词全文写入 meta.custom_prompt 留痕（REQ-20260916-007）。
+    auto：流程自动触发（pipeline_service）→ **不**在这里记执行日志 — 自动流
+    由 pipeline 自己记整段（含 save_revision 等后续步骤的时长）；手动点击
+    （auto=False，工作台「生成/重新生成」按钮）→ 记 execution_history
+    （kind=subtitle_review，手动/自动 + 时长在工作台「📜 执行日志」可查）。
     """
     system_prompt = resolve_system_prompt(rigor, custom_prompt)
     with _JOBS_LOCK:
@@ -643,6 +802,16 @@ def start_job(
             "state": "running", "stage": "准备提示词", "error": None,
             "started_at": time.time(), "finished_at": None, "entries_count": 0,
         }
+
+    # 手动点击才记执行日志（自动流 pipeline_service 自记，避免双记）
+    exec_id = ""
+    if not auto:
+        from slirn_home import execution_history
+        exec_id = execution_history.record_start(
+            outputs_dir, execution_history.KIND_SUBTITLE_REVIEW,
+            description="大模型分析字幕（生成修订建议）",
+            extra={"rigor": rigor, "model": (entry or {}).get("id") or ""},
+            auto=False, auto_session_id=auto_session_id)
 
     def _run():
         job = _JOBS[task_id]
@@ -656,9 +825,13 @@ def start_job(
 
             确定性失败（欠费/Key 无效等 RuntimeError）向上抛 → job 终止并透传原因
             —— 这种错误每批都会失败，减半只是浪费调用（REQ-20260915-007）。
+            max_tokens=8192：anthropic 协议必填且默认 4096 会把 40 段/批（≈4K
+            输出）拦腰截断；openai 协议分支忽略此参数，不受影响。
             """
             try:
-                raw = _call_llm(system_prompt, build_user_prompt(task_name, hotwords, batch), entry)
+                raw = _call_llm(system_prompt, build_user_prompt(task_name, hotwords, batch),
+                                entry, max_tokens=8192,
+                                usage_ctx={"task_id": task_id, "stage": "字幕修订"})
                 return parse_llm_suggestions(raw, batch)
             except ValueError as e:
                 if len(batch) == 1:
@@ -672,13 +845,23 @@ def start_job(
                 return _analyze(batch[:mid]) + _analyze(batch[mid:])
 
         try:
-            batches = [segments[k:k + BATCH_SIZE] for k in range(0, len(segments), BATCH_SIZE)] or [[]]
+            batches = pack_batches(segments, entry)
+            # WORKERS 并发跑批；结果按下标回原顺序（后面 zip(segments, suggestions)
+            # 依赖顺序）。撞限流时 _chat_completion 的 _pause_all 让各 worker 联动
+            # 退避，取代原来的批间 sleep。
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            results: list[list[dict] | None] = [None] * len(batches)
+            with ThreadPoolExecutor(max_workers=_effective_workers(),
+                                    thread_name_prefix="revise") as pool:
+                futs = {pool.submit(_analyze, b): bi for bi, b in enumerate(batches)}
+                done = 0
+                for fut in as_completed(futs):
+                    results[futs[fut]] = fut.result()  # 确定性失败 → 上抛终止 job（原语义）
+                    done += 1
+                    _stage(f"调用大模型 ({done}/{len(batches)})")
             suggestions: list[dict] = []
-            for bi, batch in enumerate(batches):
-                _stage(f"调用大模型 ({bi + 1}/{len(batches)})")
-                suggestions.extend(_analyze(batch))
-                if bi < len(batches) - 1:
-                    time.sleep(0.6)  # 批间间隔，降低限流概率
+            for r in results:
+                suggestions.extend(r or [])
 
             _stage("保存结果")
             entries = []
@@ -716,6 +899,11 @@ def start_job(
             job["stage"] = "完成"
             job["finished_at"] = time.time()
             log.info("[revise][%s] 完成：%d 条建议", task_id, len(entries))
+            if exec_id:
+                from slirn_home import execution_history
+                execution_history.patch_extra(outputs_dir, exec_id,
+                                              {"entries": len(entries), "batches": len(batches)})
+                execution_history.record_finish(outputs_dir, exec_id, success=True)
             if on_success:
                 try:
                     on_success(entries)
@@ -726,6 +914,10 @@ def start_job(
             job["state"] = "error"
             job["error"] = str(e)
             job["finished_at"] = time.time()
+            if exec_id:
+                from slirn_home import execution_history
+                execution_history.record_finish(outputs_dir, exec_id,
+                                                success=False, error=str(e))
 
     threading.Thread(target=_run, name=f"revise-{task_id}", daemon=True).start()
     return True
