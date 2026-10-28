@@ -468,6 +468,7 @@ def _call_highlights_llm(
     user_payload: str,
     *,
     entry: dict | None,
+    usage_ctx: dict | None = None,
 ) -> str:
     """调 revision_service._call_llm。
 
@@ -478,6 +479,7 @@ def _call_highlights_llm(
     from slirn_home import revision_service
     return revision_service._call_llm(
         system_prompt, user_payload, entry=entry, retries=1, max_tokens=8192,
+        usage_ctx=usage_ctx,
     )
 
 
@@ -803,6 +805,7 @@ def _duration_retry_loop(
     entry: dict | None = None,
     duration_min_sec: float = _DURATION_MIN_SEC,
     duration_max_sec: float = _DURATION_MAX_SEC,
+    usage_ctx: dict | None = None,
 ) -> tuple[str, list[dict], list[str], bool, int]:
     """REQ-20261015-119：时长硬约束核查 + 一轮带反馈重试。
 
@@ -835,7 +838,7 @@ def _duration_retry_loop(
     t0 = time.time()
     raw2 = ""
     try:
-        raw2 = _call_highlights_llm(sys_p, retry_payload, entry=entry)
+        raw2 = _call_highlights_llm(sys_p, retry_payload, entry=entry, usage_ctx=usage_ctx)
     except Exception as e:  # noqa: BLE001
         log.warning("Stage 3 时长反馈重试调用失败，保留第一轮结果: %s", e)
     extra_sec = int(time.time() - t0)
@@ -1134,6 +1137,7 @@ def _ocr_stage3_image(
     from slirn_home import revision_service
     text = revision_service._call_llm_vision(
         _OCR_SYSTEM_PROMPT, _OCR_USER_PROMPT, [image_path], entry=entry,
+        usage_ctx={"task_id": task_id, "stage": "短视频-OCR"},
     ).strip()
     ocr_path.parent.mkdir(parents=True, exist_ok=True)
     ocr_path.write_text(text, encoding="utf-8")
@@ -1336,7 +1340,8 @@ def _run_stage3_inner(
     t0 = time.time()
     raw = ""
     try:
-        raw = _call_highlights_llm(sys_p, user_payload, entry=entry)
+        raw = _call_highlights_llm(sys_p, user_payload, entry=entry,
+                                    usage_ctx={"task_id": task_id, "stage": "短视频-内容提取"})
     except Exception as e:  # noqa: BLE001
         log.exception("LLM 调用失败")
         state = svc.get_stage_state(project, "stage3_analyze")
@@ -1368,6 +1373,7 @@ def _run_stage3_inner(
             sys_p, user_payload, raw, srt_lines, validated, warnings,
             n_groups=n_clips, entry=entry,
             duration_min_sec=dmin, duration_max_sec=dmax,
+            usage_ctx={"task_id": task_id, "stage": "短视频-内容提取"},
         )
         elapsed += extra
         warnings = warnings + duration_retry_warnings(
@@ -1641,7 +1647,8 @@ def _rerun_stage3_one_inner(
 
     t0 = time.time()
     try:
-        raw = _call_highlights_llm(sys_p, user_payload, entry=entry)
+        raw = _call_highlights_llm(sys_p, user_payload, entry=entry,
+                                    usage_ctx={"task_id": task_id, "stage": "短视频-内容提取"})
     except Exception as e:  # noqa: BLE001
         log.exception("LLM 调用失败（rerun-one）")
         project = svc.load_project(root, task_id, project_id)
@@ -1673,6 +1680,7 @@ def _rerun_stage3_one_inner(
             sys_p, user_payload, raw, srt_lines, validated, warnings,
             n_groups=1, title_fallback=title, entry=entry,
             duration_min_sec=dmin, duration_max_sec=dmax,
+            usage_ctx={"task_id": task_id, "stage": "短视频-内容提取"},
         )
         elapsed += extra
         warnings = warnings + duration_retry_warnings(

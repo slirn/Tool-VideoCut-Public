@@ -660,7 +660,8 @@ def _llm_storyboard(repo_root: Path, project: dict, base_id: str = "") -> tuple[
             }]
         },
     }, ensure_ascii=False)
-    raw = revision_service._call_llm(system, user, entry=entry, retries=1)
+    raw = revision_service._call_llm(system, user, entry=entry, retries=1,
+                                     usage_ctx={"stage": "短视频-AI编排"})
     return _extract_json(raw), str(entry.get("id") or "")
 
 

@@ -3472,7 +3472,9 @@ def _build_topbar(repo_root: str) -> str:
         '<div class="slirn-topbar-dropdown" id="slirn-settings-dropdown" role="menu" hidden>'
         '<button type="button" class="slirn-topbar-menu-item" data-action="revkeys-open" role="menuitem">⌨ 快捷键</button>'
         '<button type="button" class="slirn-topbar-menu-item" data-action="goto-hotwords" role="menuitem">📚 热词库</button>'
+        '<button type="button" class="slirn-topbar-menu-item" data-action="goto-usage" role="menuitem">📊 Token 用量</button>'
         '<button type="button" class="slirn-topbar-menu-item" data-action="open-llm-settings" role="menuitem">大模型设置</button>'
+        '<button type="button" class="slirn-topbar-menu-item" data-action="open-sys-settings" role="menuitem">系统设置</button>'
         '<div class="slirn-topbar-menu-divider"></div>'
         '<button type="button" class="slirn-topbar-menu-item" data-action="loginlog-open" role="menuitem">📜 登录日志</button>'
         '</div></div>'
@@ -3583,6 +3585,38 @@ def build_app(repo_root: Path | None = None) -> gr.Blocks:
     <div id="slirn-tab-hotwords" class="slirn-tab-content" style="display:none;">{_render_hotword_lib(repo_root)}</div>
     <div id="slirn-tab-short-video" class="slirn-tab-content" style="display:none;">
         <div id="slirn-short-video-inner" class="slirn-tab-inner"><div class="slirn-empty">短视频列表加载中…</div></div>
+    </div>
+    <div id="slirn-tab-usage" class="slirn-tab-content" style="display:none;">
+        <div class="slirn-tab-inner">
+            <div class="slirn-card">
+                <div class="slirn-panel-header">
+                    <div class="slirn-panel-title">📊 Token 用量统计</div>
+                    <div class="slirn-panel-subtitle">全工程大模型调用的输入 / 输出 token 累计与逐笔明细</div>
+                </div>
+                <div id="slirn-usage-summary">汇总加载中…</div>
+            </div>
+            <div class="slirn-card" style="margin-top:14px;">
+                <div class="slirn-panel-header">
+                    <div class="slirn-panel-title">📋 调用明细</div>
+                    <div style="display:flex; gap:8px;">
+                        <button class="slirn-btn" data-action="usage-page-filter">🔍 筛选</button>
+                        <button class="slirn-btn" data-action="usage-page-reset">↺ 重置</button>
+                    </div>
+                </div>
+                <div class="slirn-usage-fltbar">
+                    <input class="slirn-input slirn-usage-flt" id="slirn-usage-filter" placeholder="任务 ID（留空=全部）" style="width:220px;" />
+                    <select class="slirn-input slirn-usage-flt" id="slirn-usage-model"><option value="">模型（全部）</option></select>
+                    <select class="slirn-input slirn-usage-flt" id="slirn-usage-stage"><option value="">阶段（全部）</option></select>
+                    <input type="date" class="slirn-input slirn-usage-flt" id="slirn-usage-from" title="起始日期（含当天）" />
+                    <span class="slirn-form-hint">→</span>
+                    <input type="date" class="slirn-input slirn-usage-flt" id="slirn-usage-to" title="截止日期（含当天）" />
+                    <input type="number" min="0" class="slirn-input slirn-usage-flt" id="slirn-usage-dmin" placeholder="耗时≥(秒)" style="width:100px;" />
+                    <span class="slirn-form-hint">~</span>
+                    <input type="number" min="0" class="slirn-input slirn-usage-flt" id="slirn-usage-dmax" placeholder="≤(秒)" style="width:90px;" />
+                </div>
+                <div id="slirn-usage-detail">明细加载中…</div>
+            </div>
+        </div>
     </div>
     <div id="slirn-tab-detail" class="slirn-tab-content" style="display:none;"></div>
     <div id="slirn-tab-workbench" class="slirn-tab-content" style="display:none;"></div>
@@ -4754,6 +4788,7 @@ def _register_slirn_api(
         try:
             raw_color = revision_service._call_llm_vision(
                 system_prompt, user_text, [bl_tmp], entry=cur_entry,
+                usage_ctx={"task_id": tid, "stage": "背景检测-配色"},
             )
         except Exception as e:  # noqa: BLE001
             return _bg_finish_err(f"AI 颜色识别失败: {e}")
@@ -4838,6 +4873,7 @@ def _register_slirn_api(
         try:
             raw = revision_service._call_llm_vision(
                 system_prompt, user_text, [bg_path_abs], entry=cur_entry,
+                usage_ctx={"task_id": tid, "stage": "背景检测-白区"},
             )
         except Exception as e:  # noqa: BLE001
             return _err(f"AI 检测失败: {e}")
@@ -4964,6 +5000,7 @@ def _register_slirn_api(
         try:
             raw = revision_service._call_llm_vision(
                 system_prompt, user_text, [ref_path_abs], entry=vision_entry,
+                usage_ctx={"task_id": tid, "stage": "精剪布局"},
             )
         except Exception as e:  # noqa: BLE001
             return _err(f"多模态模型调用失败: {e}")
@@ -6423,6 +6460,96 @@ def _register_slirn_api(
             current=llm_config.get_current(repo_root),
         )
 
+    @app.app.post("/slirn/api/llm_usage")
+    async def llm_usage_get(body: dict = Body(default_factory=dict)):
+        """Token 用量账本（输入/输出分开）。body.task_id 传入 → 只看该任务。"""
+        from slirn_home import llm_usage
+
+        tid = str(body.get("task_id") or "").strip()
+        return _ok("", usage=llm_usage.summary(tid or None))
+
+    @app.app.post("/slirn/api/llm_usage_log")
+    async def llm_usage_log(body: dict = Body(default_factory=dict)):
+        """逐笔调用明细（时间/模型/任务/阶段/输入/输出/耗时），倒序分页。
+
+        过滤参数：task_id / model / stage / time_from / time_to（时间段）、
+        dur_min_ms / dur_max_ms（耗时区间）；非法数值按"未填"处理。
+        """
+        from slirn_home import llm_usage
+
+        def _num(v):
+            try:
+                return int(float(v))
+            except (TypeError, ValueError):
+                return None
+
+        try:
+            limit = max(1, min(1000, int(body.get("limit") or 200)))
+            offset = max(0, int(body.get("offset") or 0))
+        except (TypeError, ValueError):
+            limit, offset = 200, 0
+        return _ok("", **llm_usage.list_records(
+            str(body.get("task_id") or "").strip() or None,
+            model=str(body.get("model") or "").strip(),
+            stage=str(body.get("stage") or "").strip(),
+            time_from=str(body.get("time_from") or "").strip(),
+            time_to=str(body.get("time_to") or "").strip(),
+            dur_min_ms=_num(body.get("dur_min_ms")),
+            dur_max_ms=_num(body.get("dur_max_ms")),
+            limit=limit, offset=offset))
+
+    @app.app.get("/slirn/api/settings")
+    async def settings_get():
+        """系统设置（config/settings.json，机器本地）+ 上下文探测缓存。"""
+        from slirn_home import settings_service
+
+        return _ok("", settings=settings_service.get_settings(repo_root),
+                   workers_range=[settings_service.MIN_WORKERS,
+                                  settings_service.MAX_WORKERS],
+                   context_cache=settings_service._read_raw(repo_root)
+                   .get("context_cache") or {})
+
+    @app.app.post("/slirn/api/settings/update")
+    async def settings_update(body: dict = Body(default_factory=dict)):
+        """更新系统设置。llm_workers：大模型并发 worker 数（1-8，下次调用生效）。"""
+        from slirn_home import settings_service
+
+        try:
+            cur = settings_service.update_settings(repo_root, body)
+        except ValueError as e:
+            return _err(str(e))
+        return _ok("", settings=cur, toast="✅ 设置已保存（并发数在下一次调用时生效）")
+
+    @app.app.post("/slirn/api/llm_probe")
+    async def llm_probe(body: dict = Body(default_factory=dict)):
+        """并发能力探测：对当前模型阶梯发最小请求，给出建议并发数。
+
+        耗时约 10-30s（取决于模型响应速度），消耗约 20 个微小请求。
+        """
+        from slirn_home import llm_config, llm_probe as probe_mod
+
+        entry = llm_config.get_current_entry(repo_root)
+        if entry is None:
+            return _err("未注册任何大模型 — 请先点顶栏「大模型设置」 添加模型")
+        result = probe_mod.probe_concurrency(entry)
+        return _ok("", **result, model=entry.get("id", ""))
+
+    @app.app.post("/slirn/api/llm_probe_ctx")
+    async def llm_probe_ctx(body: dict = Body(default_factory=dict)):
+        """上下文窗口探测：元数据接口 → 超长拒答解析 → 阶梯实测。
+
+        结果写入 settings context_cache，字幕修订/优化/精剪的 pack_batches
+        随即按「探测窗口 - 输出预留 - 余量」整行打包。被拒请求不计费，
+        首个成功请求按实际 tokens 计（通常不超过一次普通调用）。
+        """
+        from slirn_home import llm_config, llm_probe as probe_mod
+
+        entry = llm_config.get_current_entry(repo_root)
+        if entry is None:
+            return _err("未注册任何大模型 — 请先点顶栏「大模型设置」 添加模型")
+        result = probe_mod.probe_context(entry, repo_root)
+        return _ok("", **result, model=entry.get("id", ""))
+
     @app.app.post("/slirn/api/llm_config/add")
     async def llm_config_add(body: dict = Body(default_factory=dict)):
         """添加模型注册项：{id, provider, base_url, api_key_env, protocol?, vision?}。
@@ -6506,6 +6633,7 @@ def _register_slirn_api(
         try:
             reply = revision_service._call_llm(
                 "你是连通性测试助手。", "请只回复两个字：正常", entry=entry, retries=0,
+                usage_ctx={"stage": "连通性测试"},
             )
         except Exception as e:  # noqa: BLE001 — 错误信息已是 REQ-007 可读格式
             return _err(str(e))

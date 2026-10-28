@@ -122,5 +122,6 @@ def extract_hotwords(source: str, *, entry: dict | None = None,
     raw = revision_service._call_llm(
         build_system_prompt(), build_user_prompt(source, page_hint=page_hint),
         entry=entry, retries=2,
+        usage_ctx={"stage": "热词提取"},
     )
     return parse_llm_hotwords(raw)

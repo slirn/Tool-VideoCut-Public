@@ -627,8 +627,9 @@
     'goto-create':    'slirn-tab-create',
     'goto-hotwords':  'slirn-tab-hotwords',
     'goto-short-video': 'slirn-tab-short-video',
+    'goto-usage':     'slirn-tab-usage',
   };
-  var ALL_TABS = ['slirn-tab-dashboard','slirn-tab-tasks','slirn-tab-create','slirn-tab-hotwords','slirn-tab-workbench','slirn-tab-short-video'];
+  var ALL_TABS = ['slirn-tab-dashboard','slirn-tab-tasks','slirn-tab-create','slirn-tab-hotwords','slirn-tab-workbench','slirn-tab-short-video','slirn-tab-usage'];
 
   function showTab(targetCell, options) {
     ALL_TABS.forEach(function(id) {
@@ -657,6 +658,10 @@
     if (targetCell === 'slirn-tab-short-video') {
       var forceShortVideoList = !!(options && options.forceShortVideoList);
       _callShortVideoLoadWhenReady(forceShortVideoList);
+    }
+    // 切到「Token 用量」页时刷新数据（每次进入都拉最新）
+    if (targetCell === 'slirn-tab-usage') {
+      loadUsagePage();
     }
     window.scrollTo({top: 0, behavior: 'smooth'});
   }
@@ -818,6 +823,9 @@
         '<div class="slirn-modal-title">⚙️ 大模型设置</div>' +
         '<div class="slirn-llm-subtitle">当前模型：<b id="slirn-llm-current">…</b></div>' +
         '<div class="slirn-llm-list" id="slirn-llm-list"></div>' +
+        '<div class="slirn-llm-section">📊 Token 用量（输入 / 输出）</div>' +
+        '<div id="slirn-llm-usage" class="slirn-llm-usage">…</div>' +
+        '<button class="slirn-btn" data-action="llm-goto-usage" style="margin:6px 0 10px;">📊 打开用量统计页</button>' +
         '<div class="slirn-llm-section" id="slirn-llm-form-title">添加模型</div>' +
         '<div class="slirn-llm-form" id="slirn-llm-form">' +
           '<div class="slirn-llm-row"><span class="slirn-llm-label">模型名</span>' +
@@ -855,6 +863,306 @@
         if (r && r.ok) renderLLMList(r.models || [], r.current || '');
       })
       .catch(function() {});
+    renderLLMUsage();  // Token 用量（随弹窗打开刷新）
+  }
+
+  // ===== Token 用量账本渲染（数据来自服务端 llm_usage.record 的持久累计）=====
+  function fmtTok(n) {
+    n = n || 0;
+    if (n >= 1000000) return (n / 1000000).toFixed(2) + 'M';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+    return String(n);
+  }
+  function renderLLMUsage(taskId) {
+    postJSON(SLIRN_API + '/llm_usage', taskId ? {task_id: taskId} : {})
+      .then(function(r) {
+        var box = document.getElementById('slirn-llm-usage');
+        if (!box) return;
+        if (!r || !r.ok) { box.innerHTML = ''; return; }
+        var u = r.usage || {};
+        var total = u.total || {};
+        if (!total.calls) {
+          box.innerHTML = '<div class="slirn-form-hint">暂无记录 — 发起任何大模型调用后这里会出现输入 / 输出 token 统计</div>';
+          return;
+        }
+        var est = total.estimated_calls
+          ? '<span class="slirn-form-hint">（其中 ' + total.estimated_calls + ' 笔网关未回 usage，为字符估算）</span>' : '';
+        var rows = Object.keys(u.models || {}).sort(function(a, b) {
+          return ((u.models[b].prompt_tokens || 0) + (u.models[b].completion_tokens || 0))
+               - ((u.models[a].prompt_tokens || 0) + (u.models[a].completion_tokens || 0));
+        }).map(function(mid) {
+          var m = u.models[mid];
+          return '<div class="slirn-llm-row"><span class="slirn-llm-label">' + escapeHtml(mid) + '</span>' +
+            '<span>输入 <b>' + fmtTok(m.prompt_tokens) + '</b> · 输出 <b>' + fmtTok(m.completion_tokens) +
+            '</b> · ' + m.calls + ' 次</span></div>';
+        }).join('');
+        var tids = Object.keys(u.tasks || {}).sort(function(a, b) {
+          return ((u.tasks[b].prompt_tokens || 0) + (u.tasks[b].completion_tokens || 0))
+               - ((u.tasks[a].prompt_tokens || 0) + (u.tasks[a].completion_tokens || 0));
+        }).slice(0, 5);
+        var taskRows = tids.map(function(tid) {
+          var t = u.tasks[tid];
+          var stages = Object.keys(t.stages || {}).map(function(st) {
+            return escapeHtml(st) + ' ' + fmtTok((t.stages[st].prompt_tokens || 0)
+              + (t.stages[st].completion_tokens || 0));
+          }).join(' · ');
+          return '<div class="slirn-llm-row"><span class="slirn-llm-label">' + escapeHtml(tid) + '</span>' +
+            '<span>输入 <b>' + fmtTok(t.prompt_tokens) + '</b> · 输出 <b>' + fmtTok(t.completion_tokens) +
+            '</b>' + (stages ? '<br><span class="slirn-form-hint">' + stages + '</span>' : '') + '</span></div>';
+        }).join('');
+        box.innerHTML =
+          '<div class="slirn-llm-row"><span class="slirn-llm-label"><b>总计</b></span>' +
+            '<span>输入 <b>' + fmtTok(total.prompt_tokens) + '</b> · 输出 <b>' + fmtTok(total.completion_tokens) +
+            '</b> · ' + total.calls + ' 次 ' + est + '</span></div>' + rows +
+          (taskRows ? '<div class="slirn-form-hint" style="margin-top:6px;">最近消耗最大的任务（前 5）：</div>' + taskRows : '');
+      }).catch(function() {});
+  }
+
+  // ===== 系统设置弹窗 — 大模型并发 worker 数（可探测建议值）=====
+  function openSysSettings() {
+    var existing = document.getElementById('slirn-sys-modal');
+    if (existing) existing.remove();
+    var overlay = document.createElement('div');
+    overlay.id = 'slirn-sys-modal';
+    overlay.className = 'slirn-modal-overlay';
+    overlay.innerHTML =
+      '<div class="slirn-modal-card" style="max-width:520px;">' +
+        '<div class="slirn-modal-title">🛠 系统设置</div>' +
+        '<div class="slirn-llm-row" style="margin-top:12px;">' +
+          '<span class="slirn-llm-label">大模型并发<br>Worker 数</span>' +
+          '<input id="slirn-sys-workers" type="number" min="1" max="8" step="1" class="slirn-llm-input" style="width:90px;" />' +
+          '<button class="slirn-btn" data-action="sys-probe" id="slirn-sys-probe-btn">🔍 检测建议值</button>' +
+        '</div>' +
+        '<div class="slirn-form-hint" style="margin-top:4px;">' +
+          '字幕修订等分批调用大模型时的并行请求数（1-8）。改完保存即生效（无需重启）。' +
+          '「检测建议值」会对当前模型发约 20 个微小请求实测限流边界，约需 10-30 秒。' +
+        '</div>' +
+        '<div id="slirn-sys-probe-result" style="margin-top:8px;"></div>' +
+        '<div class="slirn-llm-row" style="margin-top:14px;">' +
+          '<span class="slirn-llm-label">上下文窗口<br>批量打包</span>' +
+          '<button class="slirn-btn" data-action="sys-ctx-probe" id="slirn-sys-ctx-btn">📐 探测上下文</button>' +
+        '</div>' +
+        '<div class="slirn-form-hint" style="margin-top:4px;">' +
+          '探测当前模型的上下文窗口后，字幕分批按「窗口 - 输出预留 - 余量」<b>整行打包</b>' +
+          '（短行多装、长行少装，用满上下文、减少调用次数）。被拒的探测请求不计费，' +
+          '首个成功的请求按实际 tokens 计（一般不超过一次普通调用）。' +
+        '</div>' +
+        '<div id="slirn-sys-ctx-result" style="margin-top:8px;"></div>' +
+        '<div class="slirn-llm-actions" style="margin-top:14px;">' +
+          '<button class="slirn-btn slirn-btn-primary" data-action="sys-save">💾 保存</button>' +
+          '<button class="slirn-btn" data-action="sys-close">关闭</button>' +
+        '</div>' +
+      '</div>';
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay) overlay.remove();
+    });
+    document.body.appendChild(overlay);
+    fetch(SLIRN_API + '/settings').then(function(r) { return r.json(); })
+      .then(function(r) {
+        if (r && r.ok) {
+          var el = document.getElementById('slirn-sys-workers');
+          if (el) el.value = (r.settings || {}).llm_workers;
+          var cc = r.context_cache || {};
+          var keys = Object.keys(cc);
+          if (keys.length) {
+            var box = document.getElementById('slirn-sys-ctx-result');
+            if (box) box.innerHTML = '<div class="slirn-form-hint">已缓存（点击「探测上下文」可刷新）：<br>' +
+              keys.map(function(k) {
+                return escapeHtml(k) + ' → ' + fmtTok(cc[k].tokens) + ' tokens（' +
+                  escapeHtml(String(cc[k].at || '').replace('T', ' ')) + '）';
+              }).join('<br>') + '</div>';
+          }
+        }
+      }).catch(function() {});
+  }
+
+  function sysCtxProbe() {
+    var box = document.getElementById('slirn-sys-ctx-result');
+    var btn = document.getElementById('slirn-sys-ctx-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '探测中…'; }
+    if (box) box.innerHTML = '<div class="slirn-form-hint">⏳ 正在探测上下文窗口（先查模型元数据，再发一个超长请求看网关报的上限，多数被拒请求不计费）…</div>';
+    postJSON(SLIRN_API + '/llm_probe_ctx', {}).then(function(r) {
+      if (btn) { btn.disabled = false; btn.textContent = '📐 探测上下文'; }
+      if (!r || !r.ok) {
+        if (box) box.innerHTML = '<div class="slirn-form-hint" style="color:#c0392b;">❌ ' + ((r && r.error) || '探测失败') + '</div>';
+        return;
+      }
+      var cost = r.probe_cost_tokens
+        ? '（本次计费请求约 ' + fmtTok(r.probe_cost_tokens) + ' tokens）' : '（全程被拒不计费）';
+      if (box) box.innerHTML =
+        '<div style="margin-top:4px;">' + escapeHtml(r.model || '') + ' 上下文 ≈ <b>' +
+        fmtTok(r.context_tokens) + '</b> tokens（来源：' + escapeHtml(r.source || '') + '）' + cost + '</div>' +
+        '<div style="margin-top:4px;">📦 分批打包上限：<b style="color:var(--accent-solid,#6366f1)">' +
+        r.suggested_batch + '</b> 行/批 · ' + escapeHtml(r.note || '') + '</div>';
+    }).catch(function(err) {
+      if (btn) { btn.disabled = false; btn.textContent = '📐 探测上下文'; }
+      if (box) box.innerHTML = '<div class="slirn-form-hint" style="color:#c0392b;">❌ 探测请求失败: ' + err + '</div>';
+    });
+  }
+
+  function sysSettingsProbe() {
+    var box = document.getElementById('slirn-sys-probe-result');
+    var btn = document.getElementById('slirn-sys-probe-btn');
+    if (btn) { btn.disabled = true; btn.textContent = '探测中…'; }
+    if (box) box.innerHTML = '<div class="slirn-form-hint">⏳ 正在阶梯探测并发能力（2 → 4 → 8 路，每路发一个最小请求）…</div>';
+    postJSON(SLIRN_API + '/llm_probe', {}).then(function(r) {
+      if (btn) { btn.disabled = false; btn.textContent = '🔍 检测建议值'; }
+      if (!r || !r.ok) {
+        if (box) box.innerHTML = '<div class="slirn-form-hint" style="color:#c0392b;">❌ ' + ((r && r.error) || '探测失败') + '</div>';
+        return;
+      }
+      var rows = (r.levels || []).map(function(l) {
+        var color = l.ok === l.k ? '#16a34a' : '#c0392b';
+        return '<tr><td>' + l.k + ' 路</td><td style="color:' + color + '">✓ ' + l.ok + '/' + l.k + '</td>' +
+          '<td>' + (l.throttled ? '限流 ' + l.throttled : '-') + '</td>' +
+          '<td>' + (l.failed ? '失败 ' + l.failed : '-') + '</td><td>' + (l.elapsed_ms / 1000).toFixed(1) + 's</td></tr>';
+      }).join('');
+      var sug = '<div style="margin-top:8px;">💡 建议值：<b style="font-size:16px;color:var(--accent-solid,#6366f1)">' +
+        r.suggested + '</b> 路 · ' + escapeHtml(r.note || '') +
+        ' <button class="slirn-btn" style="padding:2px 10px;" onclick="var e=document.getElementById(\'slirn-sys-workers\'); if(e){e.value=' +
+        r.suggested + ';}">采用</button></div>';
+      if (box) box.innerHTML =
+        '<table class="slirn-sys-probe-table"><thead><tr><th>并发</th><th>成功</th><th>限流</th><th>失败</th><th>耗时</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table>' + sug;
+    }).catch(function(err) {
+      if (btn) { btn.disabled = false; btn.textContent = '🔍 检测建议值'; }
+      if (box) box.innerHTML = '<div class="slirn-form-hint" style="color:#c0392b;">❌ 探测请求失败: ' + err + '</div>';
+    });
+  }
+
+  function sysSettingsSave() {
+    var el = document.getElementById('slirn-sys-workers');
+    var v = parseInt((el && el.value) || '', 10);
+    if (isNaN(v) || v < 1 || v > 8) {
+      toast('并发 Worker 数必须是 1-8 的整数', 'error');
+      return;
+    }
+    postJSON(SLIRN_API + '/settings/update', {llm_workers: v}).then(function(r) {
+      if (r && r.ok) {
+        toast(r.toast || '已保存');
+        var m = document.getElementById('slirn-sys-modal');
+        if (m) m.remove();
+      } else {
+        toast('❌ ' + ((r && r.error) || '保存失败'), 'error');
+      }
+    });
+  }
+
+  // ===== Token 用量独立页（⚙ → Token 用量）=====
+  function loadUsagePage() {
+    // 汇总
+    postJSON(SLIRN_API + '/llm_usage', {}).then(function(r) {
+      var box = document.getElementById('slirn-usage-summary');
+      if (!box) return;
+      if (!r || !r.ok) { box.innerHTML = ''; return; }
+      var u = r.usage || {};
+      var total = u.total || {};
+      if (!total.calls) {
+        box.innerHTML = '<div class="slirn-empty"><div class="slirn-empty-icon">📊</div>' +
+          '<div class="slirn-empty-text">暂无记录 — 发起任何大模型调用后这里会出现统计</div></div>';
+        return;
+      }
+      var est = total.estimated_calls
+        ? '<span class="slirn-form-hint">（其中 ' + total.estimated_calls + ' 笔为字符估算）</span>' : '';
+      var modelRows = Object.keys(u.models || {}).sort(function(a, b) {
+        return ((u.models[b].prompt_tokens || 0) + (u.models[b].completion_tokens || 0))
+             - ((u.models[a].prompt_tokens || 0) + (u.models[a].completion_tokens || 0));
+      }).map(function(mid) {
+        var m = u.models[mid];
+        return '<tr><td>' + escapeHtml(mid) + '</td><td><b>' + fmtTok(m.prompt_tokens) + '</b></td>' +
+          '<td><b>' + fmtTok(m.completion_tokens) + '</b></td><td>' + m.calls + '</td></tr>';
+      }).join('');
+      var taskRows = Object.keys(u.tasks || {}).sort(function(a, b) {
+        return ((u.tasks[b].prompt_tokens || 0) + (u.tasks[b].completion_tokens || 0))
+             - ((u.tasks[a].prompt_tokens || 0) + (u.tasks[a].completion_tokens || 0));
+      }).map(function(tid) {
+        var t = u.tasks[tid];
+        var stages = Object.keys(t.stages || {}).map(function(st) {
+          return escapeHtml(st) + ' ' + fmtTok((t.stages[st].prompt_tokens || 0)
+            + (t.stages[st].completion_tokens || 0));
+        }).join(' · ');
+        return '<tr><td>' + escapeHtml(tid) + '</td><td><b>' + fmtTok(t.prompt_tokens) + '</b></td>' +
+          '<td><b>' + fmtTok(t.completion_tokens) + '</b></td><td>' + t.calls + '</td>' +
+          '<td class="slirn-form-hint">' + stages + '</td></tr>';
+      }).join('');
+      box.innerHTML =
+        '<table class="slirn-sys-probe-table" style="max-width:420px;"><thead><tr><th></th><th>输入</th><th>输出</th><th>调用</th></tr></thead>' +
+        '<tbody><tr><td><b>总计</b></td><td><b>' + fmtTok(total.prompt_tokens) + '</b></td>' +
+        '<td><b>' + fmtTok(total.completion_tokens) + '</b></td><td>' + total.calls + ' ' + est + '</td></tr>' +
+        modelRows + '</tbody></table>' +
+        '<div class="slirn-form-hint" style="margin:10px 0 4px;">按任务（阶段括号内为该阶段输入+输出合计）：</div>' +
+        '<table class="slirn-sys-probe-table"><thead><tr><th>任务</th><th>输入</th><th>输出</th><th>调用</th><th>阶段</th></tr></thead>' +
+        '<tbody>' + taskRows + '</tbody></table>';
+    }).catch(function() {});
+    loadUsageDetail();
+  }
+
+  // 明细分页状态：page 从 1 起；size 每页条数；筛选条件每次从输入框现取
+  var USAGE_STATE = {page: 1, size: 50};
+
+  function usageFillSelect(id, options, allLabel) {
+    var sel = document.getElementById(id);
+    if (!sel) return;
+    var cur = sel.value;
+    sel.innerHTML = '<option value="">' + allLabel + '</option>' +
+      (options || []).map(function(o) {
+        return '<option' + (o === cur ? ' selected' : '') + '>' + escapeHtml(o) + '</option>';
+      }).join('');
+  }
+
+  function loadUsageDetail() {
+    var body = document.getElementById('slirn-usage-detail');
+    if (!body) return;
+    var gv = function(id) { return ((document.getElementById(id) || {}).value || '').trim(); };
+    var payload = {limit: USAGE_STATE.size, offset: (USAGE_STATE.page - 1) * USAGE_STATE.size};
+    ['task_id', 'model', 'stage', 'time_from', 'time_to'].forEach(function(k) {
+      var v = gv(k === 'task_id' ? 'slirn-usage-filter' : 'slirn-usage-' + k);
+      if (v) payload[k] = v;
+    });
+    ['dmin', 'dmax'].forEach(function(k) {
+      var v = gv('slirn-usage-' + k);
+      if (v !== '' && isFinite(v)) payload[k === 'dmin' ? 'dur_min_ms' : 'dur_max_ms'] = Math.round(parseFloat(v) * 1000);
+    });
+    body.innerHTML = '<div class="slirn-form-hint">⏳ 加载中…</div>';
+    postJSON(SLIRN_API + '/llm_usage_log', payload).then(function(r) {
+      if (!r || !r.ok) { body.innerHTML = ''; return; }
+      // 下拉选项（来自日志中出现过的值；保留当前选中）
+      usageFillSelect('slirn-usage-model', r.facets && r.facets.models, '模型（全部）');
+      usageFillSelect('slirn-usage-stage', r.facets && r.facets.stages, '阶段（全部）');
+      var recs = r.records || [];
+      var total = r.total || 0;
+      var pages = r.pages || Math.max(1, Math.ceil(total / USAGE_STATE.size));
+      var rows = recs.map(function(x) {
+        return '<tr><td>' + escapeHtml(String(x.ts || '').replace('T', ' ')) + '</td>' +
+          '<td>' + escapeHtml(x.model || '') + '</td>' +
+          '<td>' + escapeHtml(x.task_id || '-') + '</td>' +
+          '<td>' + escapeHtml(x.stage || '') + '</td>' +
+          '<td><b>' + fmtTok(x.prompt_tokens) + '</b>' + (x.estimated ? '<span class="slirn-form-hint">≈</span>' : '') + '</td>' +
+          '<td><b>' + fmtTok(x.completion_tokens) + '</b></td>' +
+          '<td>' + (x.elapsed_ms / 1000).toFixed(1) + 's</td></tr>';
+      }).join('');
+      var empty = recs.length ? '' : '<tr><td colspan="7" class="slirn-form-hint">无匹配记录</td></tr>';
+      // 分页条：‹ 上一页 / 页码 / 下一页 › + 每页条数切换
+      var sizeBtns = [50, 100, 200].map(function(s) {
+        return '<button class="slirn-btn' + (s === USAGE_STATE.size ? ' slirn-btn-on' : '') +
+          '" data-action="usage-page-size" data-size="' + s + '" style="padding:2px 8px; font-size:12px;">' + s + '</button>';
+      }).join('');
+      var prevDisabled = USAGE_STATE.page <= 1;
+      var nextDisabled = USAGE_STATE.page >= pages;
+      var pager =
+        '<div class="slirn-usage-pager">' +
+          '<span class="slirn-form-hint">共 ' + total + ' 笔 · 每页 </span>' + sizeBtns +
+          '<button class="slirn-btn" data-action="usage-page-nav" data-page="' + (USAGE_STATE.page - 1) + '"' +
+            (prevDisabled ? ' disabled' : '') + ' style="padding:2px 8px;">‹</button>' +
+          '<span class="slirn-form-hint">第 ' + USAGE_STATE.page + ' / ' + pages + ' 页</span>' +
+          '<button class="slirn-btn" data-action="usage-page-nav" data-page="' + (USAGE_STATE.page + 1) + '"' +
+            (nextDisabled ? ' disabled' : '') + ' style="padding:2px 8px;">›</button>' +
+          '<span class="slirn-form-hint" style="margin-left:8px;">≈ 为网关未报 usage 的字符估算</span>' +
+        '</div>';
+      body.innerHTML =
+        '<table class="slirn-sys-probe-table"><thead><tr><th>时间</th><th>模型</th><th>任务</th><th>阶段</th>' +
+        '<th>输入</th><th>输出</th><th>耗时</th></tr></thead><tbody>' + rows + empty + '</tbody></table>' + pager;
+    }).catch(function() { body.innerHTML = ''; });
   }
   function renderLLMList(models, current) {
     LLM_MODELS = models;
@@ -8198,6 +8506,55 @@
     }
     else if (action === 'open-llm-settings') {
       openLLMSettings();
+    }
+    else if (action === 'open-sys-settings') {
+      openSysSettings();
+    }
+    else if (action === 'sys-probe') {
+      sysSettingsProbe();
+    }
+    else if (action === 'sys-ctx-probe') {
+      sysCtxProbe();
+    }
+    else if (action === 'sys-save') {
+      sysSettingsSave();
+    }
+    else if (action === 'sys-close') {
+      var m = document.getElementById('slirn-sys-modal');
+      if (m) m.remove();
+    }
+    else if (action === 'llm-goto-usage') {
+      var lm = document.getElementById('slirn-llm-modal');
+      if (lm) lm.remove();
+      showTab('slirn-tab-usage');
+    }
+    else if (action === 'usage-page-filter') {
+      USAGE_STATE.page = 1;
+      loadUsageDetail();
+    }
+    else if (action === 'usage-page-reset') {
+      ['slirn-usage-filter', 'slirn-usage-model', 'slirn-usage-stage', 'slirn-usage-from',
+       'slirn-usage-to', 'slirn-usage-dmin', 'slirn-usage-dmax'].forEach(function(id) {
+        var elx = document.getElementById(id);
+        if (elx) elx.value = '';
+      });
+      USAGE_STATE.page = 1;
+      loadUsageDetail();
+    }
+    else if (action === 'usage-page-nav') {
+      var npage = parseInt(target.getAttribute('data-page') || '1', 10);
+      if (isFinite(npage) && npage >= 1) {
+        USAGE_STATE.page = npage;
+        loadUsageDetail();
+      }
+    }
+    else if (action === 'usage-page-size') {
+      var nsize = parseInt(target.getAttribute('data-size') || '50', 10);
+      if (isFinite(nsize) && nsize >= 1) {
+        USAGE_STATE.size = nsize;
+        USAGE_STATE.page = 1;
+        loadUsageDetail();
+      }
     }
     else if (action === 'llm-close') {
       var llmModal = document.getElementById('slirn-llm-modal');
