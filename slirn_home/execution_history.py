@@ -156,6 +156,16 @@ ALL_KINDS = {KIND_SUBTITLE_GENERATION, KIND_SUBTITLE_REVIEW,
              KIND_SHORT_VIDEO_ANALYZE_RERUN, KIND_SHORT_VIDEO_OPTIMIZE,
              KIND_SHORT_VIDEO_SUBS}
 
+# REQ-20261028-NNN：长/短视频执行日志分流。两套体系的记录仍落同一个任务级文件
+# （tasks/<tid>/outputs/execution_history.json），但查询端按 kind 家族过滤，
+# 各自工作台只看各自的记录（用户明确要求分开，不混排）。
+SHORT_VIDEO_KIND_PREFIX = "short_video_"
+
+
+def is_short_video_kind(kind: str | None) -> bool:
+    """kind 是否属于短视频体系（KIND_SHORT_VIDEO_* 均以 short_video_ 开头）。"""
+    return bool(kind) and str(kind).startswith(SHORT_VIDEO_KIND_PREFIX)
+
 
 # REQ-20261022-144：自动执行标记的 contextvar 上下文。
 # 流程配置自动跑时，编排器用 auto_context(session_id) 包住阶段调用 →
@@ -352,6 +362,43 @@ def load_history(outputs_dir: Path) -> list[dict]:
         return _read(outputs_dir)
 
 
+def mark_orphans_failed(outputs_dir: Path, *, older_than_sec: float = 300.0) -> int:
+    """把「孤儿 running 记录」标为失败（服务重启后残留）。
+
+    2026-10-28 现场：服务重启时正在跑的合成 job 被杀，它的 record_start
+    已落盘但 record_finish 永远没来 → 执行日志里那条永远显示「执行中」，
+    用户以为还在跑（实际早就没了）。
+
+    判定：status=running 且 started_at 距今超过 older_than_sec。服务启动时
+    调一次即可（进程刚起，没有任何本进程内的 running 记录）。
+    返回被标记的条数。
+    """
+    try:
+        ts = time.time()
+        with _WRITE_LOCK:
+            items = _read(outputs_dir)
+            changed = 0
+            for it in items:
+                if it.get("status") != "running":
+                    continue
+                started = float(it.get("started_at") or 0)
+                if started and (ts - started) < older_than_sec:
+                    continue
+                it["status"] = "failed"
+                it["finished_at"] = ts
+                it["finished_at_iso"] = _now_iso(ts)
+                if started:
+                    it["duration_ms"] = int((ts - started) * 1000)
+                it["error"] = (it.get("error") or "服务重启导致执行中断（未收到完成回执）")[:500]
+                changed += 1
+            if changed:
+                _write_atomic(outputs_dir, items)
+        return changed
+    except Exception as e:  # noqa: BLE001 — 清理失败不影响启动
+        log.warning("[history][%s] mark_orphans_failed 失败: %s", outputs_dir, e)
+        return 0
+
+
 def query_history_paged(outputs_dir: Path, *,
                         kinds: list[str] | None = None,
                         statuses: list[str] | None = None,
@@ -360,7 +407,8 @@ def query_history_paged(outputs_dir: Path, *,
                         offset: int = 0,
                         time_from_ts: float | None = None,
                         time_to_ts: float | None = None,
-                        auto: str = "any") -> tuple[list[dict], int]:
+                        auto: str = "any",
+                        flow: str = "any") -> tuple[list[dict], int]:
     """REQ-20260920-086：分页版 query_history — 返回 (items, total)。
 
     - items: 当前页的记录（按 started_at 倒序，已切片 offset:offset+limit）
@@ -370,6 +418,9 @@ def query_history_paged(outputs_dir: Path, *,
     但拿不到精确 total；本函数不早 break，先收完所有 matched 再切片。
 
     复用 query_history 的过滤逻辑：为了避免重复，把过滤逻辑提到 _apply_filters 内部函数。
+
+    REQ-20261028-NNN：flow = "long" 只留长视频体系记录，"short" 只留短视频
+    体系记录（kind 前缀 short_video_），"any" 不过滤（缺省，兼容旧调用）。
     """
     items = load_history(outputs_dir)
     # 倒序：最新在前
@@ -378,8 +429,13 @@ def query_history_paged(outputs_dir: Path, *,
     kind_set = set(kinds) if kinds else None
     status_set = set(statuses) if statuses else None
     auto_mode = (auto or "any").lower()
+    flow_mode = (flow or "any").lower()
     matched: list[dict] = []
     for it in items:
+        if flow_mode == "long" and is_short_video_kind(it.get("kind")):
+            continue
+        if flow_mode == "short" and not is_short_video_kind(it.get("kind")):
+            continue
         if kind_set is not None and it.get("kind") not in kind_set:
             continue
         if status_set is not None and it.get("status") not in status_set:
@@ -412,11 +468,14 @@ def query_history(outputs_dir: Path, *,
                   limit: int = 200,
                   time_from_ts: float | None = None,
                   time_to_ts: float | None = None,
-                  auto: str = "any") -> list[dict]:
+                  auto: str = "any",
+                  flow: str = "any") -> list[dict]:
     """REQ-20260918-053：执行日志查询（按阶段/状态过滤 + 关键词搜错误信息）。
 
     REQ-20260920-081：新增 time_from_ts / time_to_ts（epoch 秒，按 started_at 区间
     过滤）和 auto（"manual" | "auto" | "any"，按执行模式过滤）。
+    REQ-20261028-NNN：新增 flow（"long" | "short" | "any"，按长/短视频体系过滤，
+    见 query_history_paged 同名参数）。
 
     返回倒序最近 N 条；前端分页用 limit 控制。过滤条件全 AND。
     """
@@ -433,8 +492,13 @@ def query_history(outputs_dir: Path, *,
     else:
         status_set = None
     auto_mode = (auto or "any").lower()
+    flow_mode = (flow or "any").lower()
     out: list[dict] = []
     for it in items:
+        if flow_mode == "long" and is_short_video_kind(it.get("kind")):
+            continue
+        if flow_mode == "short" and not is_short_video_kind(it.get("kind")):
+            continue
         if kind_set is not None and it.get("kind") not in kind_set:
             continue
         if status_set is not None and it.get("status") not in status_set:

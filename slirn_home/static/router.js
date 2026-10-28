@@ -1772,6 +1772,8 @@
       time_from: logsState.timeFrom || '',
       time_to: logsState.timeTo || '',
       auto: logsState.auto || 'any',
+      // REQ-20261028-NNN：长/短视频日志分流 — 工作台只看长视频记录
+      flow: 'long',
       // REQ-20260920-086：分页 offset / limit（替代旧 limit=200）
       offset: (Math.max(1, logsState.page) - 1) * logsState.pageSize,
       limit: logsState.pageSize,

@@ -2916,12 +2916,15 @@ def _render_exec_logs_pane(task_id: str) -> str:
         f'<button type="button" class="slirn-chip" data-log-kind="{_esc(k)}" '
         f'title="{_esc(v)}">{_esc(v)}</button>'
         for k, v in execution_history.KIND_LABELS.items()
+        # REQ-20261028-NNN：长/短视频日志分流 — 长视频工作台只出长视频阶段
+        # chips（查询端 flow=long 也只回长视频记录；短视频日志在短视频页看）。
+        if not execution_history.is_short_video_kind(k)
     )
     return (
         f'<div class="slirn-wb-pane-card slirn-logs-pane" data-task-id="{_esc(task_id)}">'
         f'  <div class="slirn-wb-pane-title">📜 执行日志 <span class="slirn-logs-count" data-bind="logs-count">--</span></div>'
         f'  <div class="slirn-form-hint slirn-logs-hint">'
-        f'    所有阶段的执行历史（含字幕生成/字幕修订/切分修剪/粗剪合成/优化字幕/精剪 AI/检测/预览/导出）。阶段多选；状态/模式/时间段单选；输入关键词搜错误信息。'
+        f'    长视频各阶段的执行历史（含字幕生成/字幕修订/切分修剪/粗剪合成/优化字幕/精剪 AI/检测/预览/导出）。短视频的执行日志请到短视频工作台查看。阶段多选；状态/模式/时间段单选；输入关键词搜错误信息。'
         f'  </div>'
         f'  <div class="slirn-logs-filter">'
         f'    <div class="slirn-logs-filter-row">'
@@ -2984,6 +2987,9 @@ def _render_exec_history_card(task_id: str, mgr) -> str:
 
     outputs_dir = mgr.tasks_dir / task_id / "outputs"
     items = execution_history.load_history(outputs_dir)
+    # REQ-20261028-NNN：长/短视频日志分流 — 长视频工作台的卡片只列长视频记录
+    items = [it for it in items
+             if not execution_history.is_short_video_kind(it.get("kind"))]
     # 倒序：最新在前；空文件 → 友好空态
     items.sort(key=lambda x: (float(x.get("started_at") or 0), str(x.get("id") or "")), reverse=True)
     total = len(items)
@@ -6650,13 +6656,18 @@ def _register_slirn_api(
                    reply=(reply or "").strip()[:50])
 
     @app.app.post("/slirn/api/revise_subtitle")
-    async def revise_subtitle(body: dict = Body(default_factory=dict)):
+    async def revise_subtitle(request: Request, body: dict = Body(default_factory=dict)):
         """启动大模型字幕分析（REQ-20260915-005）。已有建议时须 force（前端二次确认）。
 
         rigor 必填（REQ-20260916-003）：high|medium|low|custom（007 自定义档），
         注入提示词并留痕；custom 时 custom_prompt 为用户修改后的提示词
         （空白回退默认底稿），实际使用全文写入 revision.json meta。
+
+        X-Slirn-Auto / X-Slirn-Auto-Session 头透传 start_job：手动点击
+        （不带 header）→ execution_history 记 manual；自动流 → pipeline 自记。
         """
+        _auto = request.headers.get("X-Slirn-Auto") == "1"
+        _auto_session_id = request.headers.get("X-Slirn-Auto-Session") or ""
         from slirn_home import llm_config, revision_service
 
         tid = (body.get("task_id") or "").strip()
@@ -6691,6 +6702,7 @@ def _register_slirn_api(
         started = revision_service.start_job(
             tid, sub_meta["segments"], t.name, hotwords, outputs_dir,
             entry=entry, rigor=rigor, custom_prompt=custom_prompt,
+            auto=_auto, auto_session_id=_auto_session_id,
         )
         if not started:
             return _ok("", toast="⏳ 该任务已在分析中，请等待完成")
@@ -6762,6 +6774,11 @@ def _register_slirn_api(
         statuses_in = body.get("statuses") or []
         auto_mode = (body.get("auto") or "any").lower()
         keyword = body.get("keyword") or ""
+        # REQ-20261028-NNN：长/短视频执行日志分流 — "long" 只留长视频体系记录，
+        # "short" 只留短视频体系记录；非法值按 "any"（不过滤，兼容旧调用）。
+        flow_mode = (body.get("flow") or "any").lower()
+        if flow_mode not in ("long", "short", "any"):
+            flow_mode = "any"
 
         # REQ-20260920-086：分页参数（page/offset 二选一，都缺省则 offset=0）
         try:
@@ -6797,6 +6814,7 @@ def _register_slirn_api(
             time_from_ts=time_from_ts,
             time_to_ts=time_to_ts,
             auto=auto_mode,
+            flow=flow_mode,
         )
         page = offset // max(1, limit) + 1
         total_pages = max(1, (total + limit - 1) // limit) if total > 0 else 0

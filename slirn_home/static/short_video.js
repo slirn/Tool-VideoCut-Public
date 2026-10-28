@@ -198,6 +198,8 @@
       statuses: svLogsState.statuses,
       keyword: svLogsState.keyword,
       auto: svLogsState.auto || 'any',
+      // REQ-20261028-NNN：长/短视频日志分流 — 短视频页只看短视频记录
+      flow: 'short',
       offset: (Math.max(1, svLogsState.page) - 1) * svLogsState.pageSize,
       limit: svLogsState.pageSize,
     }).then(function (r) {

@@ -102,6 +102,22 @@ if __name__ == "__main__":
             _install_auth(slirn_app.app, _auth,
                           task_access=_slirn_task_access(_mgr, _auth))
             print(f"[slirn] custom /slirn/api/* routes re-registered on live app", flush=True)
+            # 2026-10-28：清理「孤儿 running」执行记录 —— 服务重启时正在跑的
+            # job 被杀，其 record_start 已落盘但 record_finish 永远不会来，
+            # 执行日志里那条会永远显示「执行中」（用户以为还在跑）。
+            try:
+                from slirn_home import execution_history as _exh
+                _n = 0
+                for _t in _mgr.list():
+                    try:
+                        _n += _exh.mark_orphans_failed(
+                            Path(_mgr.tasks_dir) / _t.task_id / "outputs")
+                    except Exception:  # noqa: BLE001 — 单任务清理失败不影响启动
+                        continue
+                if _n:
+                    print(f"[slirn] 已标记 {_n} 条中断的执行记录（服务重启）", flush=True)
+            except Exception as _e:  # noqa: BLE001 — 清理失败不影响启动
+                print(f"[slirn] 执行记录清理跳过: {_e}", flush=True)
             # REQ-20260922-NNN-b：把 launch() 实际解析出的端口回写给 pipeline 调度器。
             # Gradio 在 server_port 被占用时会自动 +1（7861 被旧实例占用 → 新实例
             # 落 7862）；不回写的话调度器仍按 7861 自调 → WinError 10061 连接拒绝。

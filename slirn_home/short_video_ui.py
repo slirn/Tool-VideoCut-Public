@@ -2605,9 +2605,11 @@ def _exec_logs_pane(task_id: str) -> str:
     """
     from slirn_home import execution_history
 
-    # 默认只勾短视频相关 kind（面板聚焦短视频操作；点「清除」可看全任务日志）
+    # REQ-20261028-NNN：长/短视频日志分流 — 本面板 chips 只有短视频 kind，且
+    # 查询端 flow=short 服务端过滤（点「清除」也只是放开短视频各 kind 的选择，
+    # 不再会漏出长视频记录）；chips 默认全不勾 = 列出全部短视频记录。
     kind_chips = "".join(
-        f'<button type="button" class="slirn-chip active" data-sv-log-kind="{esc(k)}" '
+        f'<button type="button" class="slirn-chip" data-sv-log-kind="{esc(k)}" '
         f'title="{esc(v)}">{esc(v)}</button>'
         for k, v in execution_history.KIND_LABELS.items()
         if k.startswith("short_video")
@@ -2616,8 +2618,8 @@ def _exec_logs_pane(task_id: str) -> str:
         f'<div class="slirn-sv-stage-pane-inner" data-task-id="{esc(task_id)}">'
         f'  <div class="slirn-sv-stage-pane-title">📜 执行日志 '
         f'<span class="slirn-logs-count" data-sv-logs-count>--</span></div>'
-        f'  <div class="slirn-form-hint">本任务所有阶段的执行历史（含耗时、错误信息）。'
-        f'    短视频与长视频共用同一份日志文件（任务级 outputs/execution_history.json）。</div>'
+        f'  <div class="slirn-form-hint">短视频各阶段的执行历史（含耗时、错误信息）。'
+        f'    长视频的执行日志请到长视频工作台查看（两套日志互不混排）。</div>'
         f'  <div class="slirn-logs-filter">'
         f'    <div class="slirn-logs-filter-row">'
         f'      <span class="slirn-logs-filter-label">短视频操作：</span>{kind_chips}'
