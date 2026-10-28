@@ -36,6 +36,7 @@ from typing import Callable
 import proglog  # moviepy 1.0.3 自带依赖（帧进度协议）
 
 from slirn_home import execution_history
+from slirn_home import frame_grid
 
 log = logging.getLogger(__name__)
 
@@ -297,6 +298,205 @@ class _FrameProgressLogger(proglog.ProgressBarLogger):
             self._on_frame(min(100.0, float(value) / float(total) * 100.0))
 
 
+def _build_rough_srt(lines: list[dict], merged_ms: list[list[int]],
+                     plan: "frame_grid.KeepPlan | None" = None) -> str:
+    """随片字幕：行时间轴按保留区间前移（与上游 clip_srt 同语义 — 整行进/整行出）。
+
+    行与区间同源（区间=行区间的并集），每行完整落在唯一区间内。
+
+    plan（帧栅格对齐计划）给出时：段起点用 snap 后的源起点、每段在成片里的
+    实际长度用「帧数×帧长」——与画面严格对齐（否则段数上千时字幕会累积
+    偏移到末尾差几秒）。
+    """
+
+    def _fmt(ms: int) -> str:
+        ms = max(0, int(ms))
+        h, r = divmod(ms, 3600000)
+        m, r = divmod(r, 60000)
+        s, ms2 = divmod(r, 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms2:03d}"
+
+    out_off = 0
+    entries: list[tuple[str, str, str]] = []
+    for idx, (s, e) in enumerate(merged_ms):
+        seg_start = plan.seg_start_ms[idx] if plan else s
+        seg_dur = plan.seg_dur_ms[idx] if plan else (e - s)
+        for ln in lines:
+            if s <= int(ln["start_ms"]) and int(ln["end_ms"]) <= e:
+                entries.append((
+                    _fmt(int(ln["start_ms"]) - seg_start + out_off),
+                    _fmt(int(ln["end_ms"]) - seg_start + out_off),
+                    str(ln.get("text") or "")))
+        out_off += seg_dur
+    return "".join(f"{i + 1}\n{a} --> {b}\n{t}\n\n"
+                   for i, (a, b, t) in enumerate(entries))
+
+
+# 段数阈值：超过此数走分块合成（单图 split=N 的规模代价随 N 暴涨，
+# 且 N≳800 时 filter 图命令行超 Windows 上限 WinError 206）。
+_CHUNK_MIN_SEGMENTS = 200
+
+
+def _compose_ffmpeg_chunked(src: Path, merged_ms: list[list[int]], dst: Path,
+                             lines: list[dict], *, raw_n: int,
+                             total_keep_ms: int, on_progress=None, t0: float,
+                             has_audio: bool,
+                             plan: "frame_grid.KeepPlan | None" = None) -> dict:
+    """分块合成（段数很多时）：见 slirn_home/compose_chunked.py 的说明。
+
+    现场问题：118 分钟课程切 2579 段，单图 filter 跑了 80 分钟 ——
+    split=2579 让同一段源被重复解码上千遍。分块把解码量降到「源 × 1」，
+    实测 200 段铺满 7110s 源：单图 133.7s → 分块 102.6s（段数越多差距越大）。
+    """
+    from slirn_home import compose_chunked as _chunked
+
+    chunk_tmp = dst.with_name(dst.stem + ".chunk.tmp.mp4")
+    res = _chunked.compose_chunked(
+        src, merged_ms, chunk_tmp, has_audio=has_audio,
+        work_dir=dst.parent / (dst.stem + "_chunkwork"),
+        on_progress=on_progress,
+        bounds_s=plan.bounds_s if plan else None,
+        grid=plan.grid if plan else None,
+    )
+    # 产物实际落在 compose_chunked 自己的临时名上（它会再追加一段后缀）
+    tmp = Path(res.get("tmp") or chunk_tmp)
+    # A/V 时长复核（与单图路径同口径：rc=0 也可能产出坏产物）
+    # 预期时长：帧栅格对齐时用「Σ帧数×帧长」（精确）；否则退回毫秒求和。
+    expect_sec = plan.expected_sec if plan else total_keep_ms / 1000.0
+    v_dur, a_dur = _probe_av_durations(tmp)
+    if v_dur is None or abs(v_dur - expect_sec) > 1.0 or (
+            has_audio and (a_dur is None or abs(a_dur - expect_sec) > 1.0)):
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"粗剪分块合成 A/V 时长校验失败（视频 {v_dur}s / 音频 {a_dur}s，"
+            f"应约 {expect_sec:.1f}s）")
+    os.replace(tmp, dst)
+    srt = _build_rough_srt(lines, merged_ms, plan)
+    if srt:
+        dst.with_suffix(".srt").write_text(srt, encoding="utf-8")
+    return {
+        "duration": _probe_duration(dst),
+        "size_mb": round(dst.stat().st_size / 1024 / 1024, 1),
+        "segments": len(merged_ms),
+        "raw_segments": raw_n,
+        "keep_sec": round(total_keep_ms / 1000.0, 1),
+        "elapsed": round(time.time() - t0, 1),
+        "engine": "ffmpeg-chunked",
+        "chunks": res.get("chunks"),
+    }
+
+
+def _compose_ffmpeg(src: Path, merged_ms: list[list[int]], dst: Path,
+                    lines: list[dict], *, raw_n: int, total_keep_ms: int,
+                    on_progress=None, t0: float) -> dict:
+    """粗剪快路径：ffmpeg 精确 trim+concat 重编码。
+
+    两条实现（2026-10-28）：
+    - **分块**（段数多时）：保留区间按源时间切成若干块，每块 -ss/-t 限制
+      输入窗口、块内 split+trim+concat，块产物 concat 协议 -c copy 拼。
+      解码量从「源 × 段数」降到「源 × 1」——单图 split=2579 会把同一段源
+      重复解码上千遍（现场实测 80 分钟），分块后回到分钟级。
+    - **单图**（段数少时）：一趟 filter 图搞定，步骤最少。
+
+    阈值 _CHUNK_MIN_SEGMENTS 以上走分块（单图在 800 段已超 Windows 命令行
+    长度上限 WinError 206，段数再大必然失败）；以下走单图。
+    两条路径都帧精确（trim+setpts 重编码，不走 -c copy 的关键帧对齐）、
+    A/V 时长复核。失败抛异常，调用方回落上游 moviepy 老路。
+
+    帧栅格对齐（2026-10-28）：段边界 snap 到源帧栅格 ⇒ 段内音视频等长、
+    总时长可精确预期；否则段数上千时产物时长与毫秒求和线性偏离（现场
+    2579 段偏离 +2.9s）⇒ A/V 复核（1.0s 阈值）必然失败 ⇒ 白跑一遍再回落
+    80 分钟老路。
+    """
+    import io
+
+    from slirn_home import asr_service
+
+    has_audio = asr_service.has_audio_track(src)
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+
+    # 帧栅格对齐（探不到栅格/VFR ⇒ plan=None，走原行为）
+    plan = frame_grid.plan_keep_for(src, merged_ms)
+    expect_sec = plan.expected_sec if plan else total_keep_ms / 1000.0
+    if plan:
+        log.info("[compose] 帧栅格对齐：%d 段 → 预期 %.3fs（毫秒求和 %.3fs）",
+                 len(merged_ms), plan.expected_sec, total_keep_ms / 1000.0)
+
+    if len(merged_ms) >= _CHUNK_MIN_SEGMENTS:
+        try:
+            return _compose_ffmpeg_chunked(
+                src, merged_ms, dst, lines, raw_n=raw_n,
+                total_keep_ms=total_keep_ms, on_progress=on_progress,
+                t0=t0, has_audio=has_audio, plan=plan)
+        except Exception as e:  # noqa: BLE001 — 分块失败回落单图
+            log.warning("[compose] 分块合成失败，回落单图: %s", e)
+
+    tmp = dst.with_name(dst.stem + ".tmp.mp4")
+    cmd = build_optimize_cut_cmd(src, tmp, merged_ms, has_audio=has_audio,
+                                  bounds_s=plan.bounds_s if plan else None)
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+    proc.stdout = io.TextIOWrapper(
+        proc.stdout, encoding="utf-8", newline="\n", line_buffering=True)
+    last_tick = 0.0
+    while True:
+        line = proc.stdout.readline()
+        if not line:
+            if proc.poll() is not None:
+                break
+            continue
+        line = line.strip()
+        if "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        if key in ("out_time_ms", "out_time_us"):
+            try:
+                t = int(val) if key == "out_time_ms" else int(val) // 1000
+            except ValueError:
+                continue
+            now = time.time()
+            if on_progress and now - last_tick >= 0.3:
+                last_tick = now
+                on_progress(5.0 + min(1.0, t / max(1, total_keep_ms)) * 93.0)
+    rc = proc.wait()
+    if rc != 0:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(f"ffmpeg 粗剪合成失败（退出码 {rc}）")
+
+    # rc=0 也可能产出坏产物（优化成片阶段踩过：filter 图缺陷 → 音频中途静默）
+    v_dur, a_dur = _probe_av_durations(tmp)
+    if v_dur is None or abs(v_dur - expect_sec) > 1.0 or (
+            has_audio and (a_dur is None or abs(a_dur - expect_sec) > 1.0)):
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"粗剪快路径 A/V 时长校验失败（视频 {v_dur}s / 音频 {a_dur}s，"
+            f"应约 {expect_sec:.1f}s）— 回落 moviepy 老路")
+
+    os.replace(tmp, dst)
+    srt = _build_rough_srt(lines, merged_ms, plan)
+    if srt:
+        dst.with_suffix(".srt").write_text(srt, encoding="utf-8")
+    return {
+        "duration": _probe_duration(dst),
+        "size_mb": round(dst.stat().st_size / 1024 / 1024, 1),
+        "segments": len(merged_ms),
+        "raw_segments": raw_n,
+        "keep_sec": round(total_keep_ms / 1000.0, 1),
+        "elapsed": round(time.time() - t0, 1),
+        "engine": "ffmpeg",
+    }
+
+
 def compose_rough_cut(
     src: Path,
     intervals_ms: list[tuple[int, int]],
@@ -304,7 +504,7 @@ def compose_rough_cut(
     lines: list[dict],
     on_progress=None,
 ) -> dict:
-    """用上游 VideoClipper.video_clip 把保留区间按序拼接合成 dst。
+    """把保留区间按序拼接合成 dst：优先 ffmpeg 单趟快路径，失败回落上游 moviepy。
 
     Args:
         src: 源视频（任务工作视频 — 截取段或原视频，时间轴与切分清单一致）
@@ -341,6 +541,24 @@ def compose_rough_cut(
     raw_n = len(intervals_ms)
 
     total_keep_ms = sum(e - s for s, e in merged_ms)
+
+    # ---- 快路径（2026-10-28）：ffmpeg 单趟 trim+concat（优化成片同机制）。
+    # 纯掐段拼接无需 moviepy 的 Python 逐帧管道，实测 ~4×；帧精确 + A/V 时长
+    # 复核。任何异常回落下面的上游 moviepy 老路（保底永远可用）。
+    try:
+        if on_progress:
+            on_progress(3.0)
+        return _compose_ffmpeg(src, merged_ms, dst, lines, raw_n=raw_n,
+                               total_keep_ms=total_keep_ms,
+                               on_progress=on_progress, t0=time.time())
+    except Exception as e:  # noqa: BLE001 — 快路径只许快，不许拦路
+        log.warning("[compose] ffmpeg 快路径失败，回落上游 moviepy 合成: %s", e)
+        for p in dst.parent.glob(dst.stem + ".tmp.mp4"):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
     last_tick = 0.0
 
     def _on_frame(pct: float) -> None:
@@ -412,6 +630,7 @@ def compose_rough_cut(
         "raw_segments": raw_n,
         "keep_sec": round(total_keep_ms / 1000.0, 1),
         "elapsed": round(time.time() - t0, 1),
+        "engine": "moviepy",
     }
 
 
@@ -584,7 +803,9 @@ def ffmpeg_bin() -> str:
 
 
 def build_optimize_cut_cmd(src: Path, dst: Path, keep_ms: list[list[int]],
-                           *, has_audio: bool = True) -> list[str]:
+                           *, has_audio: bool = True,
+                           bounds_s: list[tuple[float, float]] | None = None
+                           ) -> list[str]:
     """优化成片剪辑的 ffmpeg argv（单趟精确重编码，纯函数可单测）。
 
     每段 trim+setpts（有音轨再 atrim+asetpts）→ concat 拼接。
@@ -593,6 +814,10 @@ def build_optimize_cut_cmd(src: Path, dst: Path, keep_ms: list[list[int]],
 
     输入流 [0:v]/[0:a] 在一个 filter_complex 里只能被消费一次：多段时先
     split/asplit 扇出成 n 份再各自 trim/atrim（单次消费合法，单段直连）。
+
+    bounds_s: 可选的**帧栅格对齐**段边界（秒，绝对源时间）。给出时用它替代
+    keep_ms 换算的边界（选中的帧集合不变，但音频与视频用同一边界 ⇒ 段内
+    等长、concat 不补空隙、总时长可精确预期）。见 slirn_home/frame_grid.py。
     """
     n = len(keep_ms)
     parts: list[str] = []
@@ -604,7 +829,11 @@ def build_optimize_cut_cmd(src: Path, dst: Path, keep_ms: list[list[int]],
     for k, (s, e) in enumerate(keep_ms):
         vsrc = f"[sv{k}]" if n > 1 else "[0:v]"
         asrc = f"[sa{k}]" if n > 1 else "[0:a]"
-        ss, se = f"{s / 1000:.3f}", f"{e / 1000:.3f}"
+        if bounds_s is not None:
+            ss = frame_grid.fmt_bound(bounds_s[k][0])
+            se = frame_grid.fmt_bound(bounds_s[k][1])
+        else:
+            ss, se = f"{s / 1000:.3f}", f"{e / 1000:.3f}"
         parts.append(f"{vsrc}trim=start={ss}:end={se},setpts=PTS-STARTPTS[v{k}]")
         if has_audio:
             parts.append(f"{asrc}atrim=start={ss}:end={se},asetpts=PTS-STARTPTS[a{k}]")
