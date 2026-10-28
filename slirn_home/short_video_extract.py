@@ -183,6 +183,35 @@ def _run_funasr_extract(
         model = "paraformer"
     hotwords = _norm_hotwords(hotwords)
 
+    # 快路径：进程内识别（asr_service 模型单例 — 优化字幕阶段同款链路：
+    # seaco-paraformer + VAD + 标点，SRT 由 segments_to_srt 产出，格式与
+    # subtitle.srt 同源）。子进程 runner 每跑一次都要冷启动加载模型（~9s），
+    # 进程内首跑加载后续常驻；subs 阶段每条 clip 各跑一次尤其受益。
+    # 只对默认 paraformer/zh/无 sd 走快路（nano/sensevoice 模型不同，
+    # 仍走子进程老路）；任何异常回落老路兜底。
+    if model == "paraformer" and lang == "zh" and sd_switch == "no":
+        try:
+            from slirn_home import asr_service
+
+            t0 = time.time()
+            st = asr_service._run_recognition(str(input_video), hotwords, False)
+            segments = asr_service.segments_from_sentences(st.get("sentences") or [])
+            srt_text = asr_service.segments_to_srt(segments)
+            if not segments or not srt_text.strip():
+                raise RuntimeError("进程内识别结果为空")
+            output_srt.write_text(srt_text, encoding="utf-8")
+            return FunasrRunResult(
+                srt_path=output_srt, raw_json=None,
+                elapsed_sec=int(time.time() - t0), stderr_tail="",
+                returncode=0,
+            )
+        except Exception as e_fast:  # noqa: BLE001 — 快路径只许快，不许拦路
+            log.warning("[funasr] 进程内识别失败，回落子进程 runner: %s", e_fast)
+            try:
+                output_srt.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     cmd = [
         sys.executable, str(runner), str(target),
         "--input", str(input_video),

@@ -272,48 +272,81 @@ def _coarse_one(
         segments = [(start_ms, end_ms)]
 
     t0 = time.time()
+    # 快路径：ffmpeg 单趟 trim+concat（粗剪合成/优化成片同款机制 — moviepy
+    # 的 Python 逐帧管道是该阶段耗时大头，preset 只是零头）。失败回落
+    # moviepy 老路兜底（快路径只许快，不许拦路）。
+    tmp: Path | None = None
     try:
-        import moviepy.editor as mpy
-        video = mpy.VideoFileClip(str(source_video))
-        try:
-            # 把所有 segments 限制在 video.duration 内
-            vid_dur = video.duration
-            seg_list = _clamp_segments_ms(segments, vid_dur)
-            if not seg_list:
-                raise ValueError("segments 为空或全部无效")
+        import os
+        import subprocess
 
-            clips = [video.subclip(s, e) for s, e in seg_list]
+        from slirn_home import asr_service as _asr
+        from slirn_home import compose_service as _cs
+
+        vid_dur = _cs._probe_duration(source_video)
+        seg_list = (_clamp_segments_ms(segments, vid_dur) if vid_dur
+                    else [(max(0, s) / 1000.0, e / 1000.0) for s, e in segments])
+        if not seg_list:
+            raise ValueError("segments 为空或全部无效")
+        tmp = out_mp4.with_name(out_mp4.stem + ".tmp.mp4")
+        cmd = _cs.build_optimize_cut_cmd(
+            source_video, tmp,
+            [[int(s * 1000), int(e * 1000)] for s, e in seg_list],
+            has_audio=_asr.has_audio_track(source_video))
+        r = subprocess.run(cmd, capture_output=True, timeout=600,
+                           encoding="utf-8", errors="replace")
+        if r.returncode != 0 or not tmp.is_file() or tmp.stat().st_size < 1024:
+            raise RuntimeError(f"ffmpeg rc={r.returncode}: {(r.stderr or '')[-300:]}")
+        os.replace(tmp, out_mp4)
+    except Exception as e_fast:  # noqa: BLE001
+        log.warning("[sv-coarse] ffmpeg 快路径失败，回落 moviepy: %s", e_fast)
+        if tmp is not None:
             try:
-                if len(clips) == 1:
-                    final = clips[0]
-                else:
-                    final = mpy.concatenate_videoclips(clips)
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        try:
+            import moviepy.editor as mpy
+            video = mpy.VideoFileClip(str(source_video))
+            try:
+                # 把所有 segments 限制在 video.duration 内
+                vid_dur = video.duration
+                seg_list = _clamp_segments_ms(segments, vid_dur)
+                if not seg_list:
+                    raise ValueError("segments 为空或全部无效")
+
+                clips = [video.subclip(s, e) for s, e in seg_list]
                 try:
-                    final.write_videofile(
-                        str(out_mp4),
-                        audio_codec="aac",
-                        codec="libx264",
-                        preset="medium",
-                        verbose=False,
-                        logger=None,
-                    )
-                finally:
-                    final.close()
-            finally:
-                for c in clips:
+                    if len(clips) == 1:
+                        final = clips[0]
+                    else:
+                        final = mpy.concatenate_videoclips(clips)
                     try:
-                        c.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-        finally:
-            video.close()
-    except Exception as e:  # noqa: BLE001
-        return CoarseClipResult(
-            index=index, coarse_mp4=out_mp4, coarse_srt=out_srt,
-            status="failed", duration_sec=0.0,
-            elapsed_sec=int(time.time() - t0),
-            error=f"moviepy subclip/concat 失败: {e}",
-        )
+                        final.write_videofile(
+                            str(out_mp4),
+                            audio_codec="aac",
+                            codec="libx264",
+                            preset="medium",
+                            verbose=False,
+                            logger=None,
+                        )
+                    finally:
+                        final.close()
+                finally:
+                    for c in clips:
+                        try:
+                            c.close()
+                        except Exception:  # noqa: BLE001
+                            pass
+            finally:
+                video.close()
+        except Exception as e:  # noqa: BLE001
+            return CoarseClipResult(
+                index=index, coarse_mp4=out_mp4, coarse_srt=out_srt,
+                status="failed", duration_sec=0.0,
+                elapsed_sec=int(time.time() - t0),
+                error=f"moviepy subclip/concat 失败: {e}",
+            )
 
     elapsed = int(time.time() - t0)
     if not out_mp4.is_file() or out_mp4.stat().st_size < 1024:

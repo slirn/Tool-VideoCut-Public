@@ -359,12 +359,43 @@ def _run_stage4_optimize_inner(
     failed = 0
     # REQ-20261016-146：删除行时间回填用（src_lines 可能缺 start_ms/end_ms）
     srt_times = _resolve_srt_line_times(root, task_id, project_id)
+
+    def _fetch_llm(hl: dict) -> str:
+        user_p = _optimize_user_payload(
+            str(hl.get("title") or ""),
+            [dict(sl) for sl in hl.get("subtitle_lines") or []])
+        return revision_service._call_llm(
+            system, user_p, entry=entry, retries=1,
+            usage_ctx={"task_id": task_id, "stage": "短视频-字幕优化"})
+
     try:
-        for hl in highlights:
+        # 并发预取各 highlight 的 LLM 响应（与修订/优化字幕同口径 — 逐条串行
+        # 改并发；限流退避由 _chat_completion 的 _pause_all/_wait_pause 全局
+        # 联动承担）。解析与状态更新仍在下方按原序执行；任一调用失败收齐后
+        # 抛首个（与原先「当场抛」语义一致）。
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from slirn_home.revision_service import _effective_workers
+
+        llm_raws: list[str] = [""] * len(highlights)
+        with ThreadPoolExecutor(
+                max_workers=max(1, min(_effective_workers(), len(highlights) or 1)),
+                thread_name_prefix="sv-opt") as pool:
+            futs = {pool.submit(_fetch_llm, hl): pos
+                    for pos, hl in enumerate(highlights)}
+            errs: list[Exception] = []
+            for fut in as_completed(futs):
+                try:
+                    llm_raws[futs[fut]] = fut.result()
+                except Exception as e:  # noqa: BLE001 — 收齐再抛，别丢其余结果
+                    errs.append(e)
+            if errs:
+                raise errs[0]
+
+        for hl_pos, hl in enumerate(highlights):
             idx = int(hl.get("index") or 0) or (len(hl_states) + 1)
             src_lines = [dict(sl) for sl in hl.get("subtitle_lines") or []]
-            user_p = _optimize_user_payload(str(hl.get("title") or ""), src_lines)
-            raw = revision_service._call_llm(system, user_p, entry=entry, retries=1)
+            raw = llm_raws[hl_pos]
             (opt_dir / f"llm_raw_hl{idx}.txt").write_text(
                 str(raw), encoding="utf-8",
             )
