@@ -2026,7 +2026,18 @@ def _render_fine_upload_card(task_id: str, kind: str, mgr: TaskManager, material
     has = " has-file" if path else ""
     # REQ-20260919-061 用户反馈：状态显示当前来源 + 文件名；上传/自动获取两个按钮都常驻可用，
     # 点哪个就用哪个（最后一次操作决定 source 字段），不再禁用对方按钮。
-    if source == "auto":
+    # REQ-20261028-NNN：audio 是系统 BGM 复制品（select_default_bgm 只写 path
+    # 不写 source）→ 按 tasks/<tid>/materials/audio/<bgm_id>.mp3 命名约定识别，
+    # 工作台重渲后正确显示「📦 系统 BGM + 曲名」，而不是「📤 手动上传 lofi_xx.mp3」。
+    audio_bgm_id = ""
+    if kind == "audio" and filename:
+        _stem = Path(filename).stem
+        audio_bgm_id = _stem if any(b["id"] == _stem for b in _DEFAULT_BGMS) else ""
+    if audio_bgm_id:
+        _bgm_name = next((b["name"] for b in _DEFAULT_BGMS if b["id"] == audio_bgm_id), "")
+        source_badge = '<span class="slirn-fine-source-badge default_bgm">📦 系统 BGM</span>'
+        status_text = f"🎵 已选 BGM：{_esc(_bgm_name or filename)}"
+    elif source == "auto":
         source_badge = '<span class="slirn-fine-source-badge auto">📥 自动获取</span>'
         status_text = f"✅ 已从上游获取：{_esc(upstream_name)}"
     elif source == "upload" and filename:
@@ -2051,11 +2062,29 @@ def _render_fine_upload_card(task_id: str, kind: str, mgr: TaskManager, material
     # 避免 router.js / CSS 改动。data-task-id 用于 router.js 的 change 委托拿 tid。
     default_bgm_html = ""
     if kind == "audio":
+        # REQ-20261028-NNN：选项改为服务端直出。此前下拉只渲染「— 不选 —」占位、
+        # 全靠 router.js fineDefaultBgmLoad 异步填充，而它只被 pipeline loadPanel
+        # 调用 — 工作台同任务重渲（innerHTML 整体替换）时 slirnPipelineMount 按
+        # 同 tid 短路不重跑 loadPanel，新渲染的下拉再无人填充 → 永远只剩占位项
+        # （用户报告「背景音乐没显示出来」）。服务端直出 5 个内置 lo-fi 选项 +
+        # data-current-bgm 回显标记；router.js 在工作台重渲后仍会重拉一遍刷新
+        # available 并按该标记/会话缓存恢复选中，两条路互补。
+        _avail = [b for b in _get_default_bgms() if b.get("available")]
+        _opts = ['<option value="">— 不选（清空选择）—</option>']
+        for b in _avail:
+            _mb = (b.get("size_bytes") or 0) / 1048576
+            _sel_attr = " selected" if b["id"] == audio_bgm_id else ""
+            _opts.append(
+                f'<option value="{_esc(b["id"])}"{_sel_attr}>'
+                f'🎵 {_esc(b["name"])}（{_mb:.1f} MB）</option>')
+        if not _avail:
+            _opts.append('<option value="" disabled>（系统暂无可用 BGM，请上传自定义）</option>')
         default_bgm_html = (
             f'<div class="slirn-fine-default-bgm-row" data-task-id="{_esc(task_id)}">'
             f'<span class="slirn-fine-actions-label">📦 系统提供的 BGM</span>'
-            f'<select id="slirn-fine-default-bgm" class="slirn-fine-default-bgm-select">'
-            f'<option value="">— 不选（清空选择）—</option>'
+            f'<select id="slirn-fine-default-bgm" class="slirn-fine-default-bgm-select" '
+            f'data-current-bgm="{_esc(audio_bgm_id)}">'
+            f'{"".join(_opts)}'
             f'</select>'
             f'</div>'
         )

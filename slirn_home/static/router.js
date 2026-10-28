@@ -1455,6 +1455,13 @@
         bindCropAspectLink();  // REQ-20260919-061a：crop_w / crop_h 按 16:9 联动（防变形）
         bindBgWhiteDetector();  // REQ-20260919-062：背景图白色区域检测（算法 + 阈值 + 4 角点 + 填充）
         bindFineMaterialPreviews();  // REQ-20260919-063：每个素材的 👁️ 预览按钮（图片/视频/音频/SRT）
+        // REQ-20261028-NNN：工作台重渲后重拉「系统提供的 BGM」列表（选项虽已
+        // 服务端直出，仍需刷新 available + 回显选中 — 此前唯一的填充时机是
+        // pipeline loadPanel，同任务重渲被 slirnPipelineMount 短路 → 下拉被
+        // innerHTML 替换后无人再填充，只剩「— 不选 —」占位）。
+        if (typeof window.fineDefaultBgmLoad === 'function') {
+          try { window.fineDefaultBgmLoad(); } catch (e) { console.warn('[bgm-load]', e); }
+        }
         // 模板列表已搬到「📥 引用参数」modal 里 — wb 渲染时不主动拉，按需由 fineImportShow() 取
         var optSt = revVis('slirn-opt-status');  // 优化 job 还在跑 → 恢复轮询
         if (optSt && optSt.dataset.taskId && optSt.dataset.state === 'running')
@@ -3655,6 +3662,9 @@
             card.classList.add('has-file');
             card.setAttribute('data-source', 'upload');
           }
+          // REQ-20261028-NNN：audio 换成自定义上传后同步会话缓存，防止
+          // fineDefaultBgmSyncFromFc 拿旧 BGM 路径错误回显选中旧曲目。
+          if (kind === 'audio') window._slirnFineAudioPath = (j.path || file.name);
           // REQ-20260921-NNN：上传成功后解除预览 / 详情按钮的 disabled 状态
           // （之前只更新 status 文本 + 加 has-file 类，没去 disabled → 用户看到
           // 预览/详情按钮还是灰的，体验 bug）。逐个条件 DOM 选择器解掉 disabled。
@@ -5200,6 +5210,10 @@
         return fname === b.id + '.mp3';
       });
       sel.value = match ? match.id : '';
+    } else if (sel.getAttribute('data-current-bgm')) {
+      // REQ-20261028-NNN：刚加载页面（本会话还没选过 BGM，_slirnFineAudioPath
+      // 未设）→ 用服务端渲染的当前标记回显，刷新后选中态不丢。
+      sel.value = sel.getAttribute('data-current-bgm');
     }
   }
 
