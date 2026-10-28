@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>设置功能 · 使用说明书</title>
+<style>
+  :root {
+    --fg: #1e293b; --fg2: #475569; --muted: #64748b;
+    --line: #e2e8f0; --accent: #4f46e5; --soft: #eef2ff;
+    --ok: #059669; --warn: #b45309; --code-bg: #f1f5f9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 20px 72px;
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 15px; line-height: 1.85; color: var(--fg);
+    background: #f8fafc;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+  header {
+    margin: 0 -20px 28px; padding: 30px 20px 26px;
+    background: linear-gradient(135deg, #eef2ff 0%, #f5f3ff 55%, #fdf2f8 100%);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 { margin: 0 0 6px; font-size: 25px; letter-spacing: .3px; }
+  header p { margin: 0; color: var(--muted); font-size: 13.5px; }
+  h2 {
+    font-size: 19px; margin: 38px 0 12px; padding: 0 0 8px 12px;
+    border-left: 4px solid var(--accent); border-bottom: 1px solid var(--line);
+  }
+  h3 { font-size: 16px; margin: 22px 0 8px; color: #312e81; }
+  h4 { font-size: 14.5px; margin: 16px 0 6px; color: var(--fg2); }
+  p { margin: 8px 0; }
+  ul, ol { margin: 8px 0 12px; padding-left: 26px; }
+  li { margin: 5px 0; }
+  code {
+    background: var(--code-bg); padding: 1px 6px; border-radius: 5px;
+    font-family: Consolas, "Courier New", monospace; font-size: 13px;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 13.5px; }
+  th, td { border: 1px solid var(--line); padding: 8px 11px; text-align: left; vertical-align: top; }
+  th { background: var(--soft); font-weight: 600; }
+  .step {
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    padding: 4px 20px 16px; margin: 16px 0 22px;
+    box-shadow: 0 1px 3px rgba(15,23,42,.05);
+  }
+  .step > h3 { margin-top: 16px; color: var(--accent); }
+  .badge {
+    display: inline-block; padding: 1px 9px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; vertical-align: 2px;
+  }
+  .b-note { background: var(--soft); color: #3730a3; }
+  .tip, .warn, .ok {
+    border-radius: 10px; padding: 11px 15px; margin: 12px 0; font-size: 14px;
+  }
+  .tip { background: var(--soft); border: 1px solid #c7d2fe; }
+  .warn { background: #fffbeb; border: 1px solid #fde68a; color: #78350f; }
+  .ok { background: #ecfdf5; border: 1px solid #a7f3d0; color: #065f46; }
+  kbd {
+    background: #fff; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 6px; font-size: 12.5px;
+    font-family: Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #e2e8f0; --fg2: #cbd5e1; --muted: #94a3b8;
+      --line: #334155; --accent: #a78bfa; --soft: #1e1b4b; --code-bg: #1e293b;
+    }
+    body { background: #0f172a; }
+    header { background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%); border-color: #334155; }
+    .step { background: #131c31; border-color: #334155; }
+    h3 { color: #c4b5fd; }
+    th { background: #1e1b4b; }
+    .tip { background: #1e1b4b; border-color: #4338ca; }
+    .warn { background: #3b2a12; border-color: #92400e; color: #fde68a; }
+    .ok { background: #0d2f24; border-color: #047857; color: #6ee7b7; }
+    kbd { background: #1e293b; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>设置功能 · 使用说明书</h1>
+  <p>VideoCut 工作台 · 顶栏「⚙ 设置」下拉里的六个功能逐一说明：「做什么、怎么操作、数据存在哪、常见问题」。所有功能都不需要重启服务，保存即生效。</p>
+</header>
+
+<h2>〇、总览</h2>
+<div class="step">
+<p>点顶栏右上角 <b>⚙ 设置 ▾</b> 展开菜单，包含以下功能（按菜单顺序）：</p>
+<table>
+  <tr><th>菜单项</th><th>一句话说明</th><th>常见使用时机</th></tr>
+  <tr><td>⌨ 快捷键</td><td>自定义预览播放器等键盘快捷键</td><td>习惯键盘操作后</td></tr>
+  <tr><td>📚 热词库</td><td>专有名词词库（可 AI 提取），提高字幕识别准确率</td><td>开始处理长视频之前</td></tr>
+  <tr><td>📊 Token 用量</td><td>全工程大模型调用的 token 汇总与逐笔明细</td><td>随时查看消耗</td></tr>
+  <tr><td>大模型设置</td><td>注册 / 切换 / 测试大模型（Key 走环境变量）</td><td>第一次使用，或换模型时</td></tr>
+  <tr><td>系统设置</td><td>大模型并发数与上下文窗口（均可一键探测）</td><td>长视频字幕阶段提速</td></tr>
+  <tr><td>📜 登录日志</td><td>本人最近的登录 / 登出 / 失败记录</td><td>排查「为什么被踢下线」</td></tr>
+</table>
+<div class="tip">配置数据都落在服务器本地文件里，换浏览器、清缓存都不丢：大模型注册表 <code>data/llm.json</code>、系统设置 <code>config/settings.json</code>、用量账本 <code>data/llm_usage.json</code> 与逐笔明细 <code>data/llm_usage_log.jsonl</code>（明细超 5000 行自动裁半）。</div>
+</div>
+
+<h2>一、大模型设置</h2>
+<div class="step">
+<h3>1.1 它管什么</h3>
+<p>整个工程所有「用到大模型」的环节 — 字幕修订、优化字幕（不明确字词 + 断句整理）、精剪校对、短视频内容提取 / 编排、热词 AI 分析 — 用的都是这里注册的<b>当前模型</b>。没配好模型，这些阶段会报「未配置大模型」。</p>
+
+<h3>1.2 添加一个模型</h3>
+<ol>
+  <li>「⚙ 设置 → 大模型设置」打开弹窗，拉到下方「添加模型」表单。</li>
+  <li><b>模型名</b>：服务商的模型 ID，如 <code>deepseek-chat</code>、<code>MiniMax-M3</code>。</li>
+  <li><b>厂商</b>：显示用的备注名，如「DeepSeek」「阿里云百炼」。</li>
+  <li><b>协议</b>：按服务商文档二选一 —
+    <code>OpenAI 兼容</code>（请求发到 <code>{Base URL}/chat/completions</code>）或
+    <code>Anthropic</code>（请求发到 <code>{Base URL}/v1/messages</code>）。</li>
+  <li><b>Base URL</b>：接口根地址，如 <code>https://api.deepseek.com/v1</code>。</li>
+  <li><b>Key 环境变量</b>：填变量<b>名</b>（如 <code>DEEPSEEK_API_KEY</code>），不是 Key 本身。</li>
+  <li><b>支持图片</b>：多模态模型才勾 — 精剪合成的「AI 智能布局」要分析视频截图，需要此项。</li>
+  <li>点「➕ 添加」，然后点该行的「测试」发一个最小请求验证连通，最后点「⭐ 设为当前」启用。</li>
+</ol>
+
+<h3>1.3 管理已有模型</h3>
+<p>已注册列表每行四个按钮：<b>⭐ 设为当前</b>（全局生效）、<b>测试</b>（连通性验证，结果会显示在表单下方）、<b>编辑</b>（回填表单改配置）、<b>删除</b>。带 ⭐ 高亮的是当前模型。</p>
+
+<div class="warn"><b>Key 的安全设计（务必了解）</b>：界面从头到尾只保存「环境变量名」，<b>不保存也不显示 Key 本体</b>。真正的 Key 放在服务器系统环境变量里（如 Windows 的 <code>DEEPSEEK_API_KEY</code>）。换 Key 只需改环境变量，界面一个字都不用动；界面 / 配置文件泄露也不会带走 Key。</div>
+
+<div class="tip"><b>协议选错的典型症状</b>：调用一直 404 — 多数是协议与 Base URL 不匹配（例如 Anthropic 协议的网关配了 OpenAI 风格的 URL，或反之）。对照服务商文档检查这两项。</div>
+
+<div class="tip">弹窗中部有「📊 Token 用量」区块（当前汇总快照），点「打开用量统计页」直达下面第三节的用量页。</div>
+</div>
+
+<h2>二、系统设置</h2>
+<div class="step">
+<h3>2.1 大模型并发 Worker 数（1–8）</h3>
+<p>字幕修订 / 优化字幕 / 精剪校对这类「几百行字幕分批调大模型」的阶段，同时发出的并行请求数。</p>
+<ul>
+  <li><b>调大</b> → 阶段耗时近似除以并发数（长视频收益最明显：几百行从串行几十分钟缩到最慢一批的时长）。</li>
+  <li><b>调太大</b> → 撞服务商限流（429），系统会自动全体退避等待再重试 — 能跑完，但反而慢。</li>
+  <li>改完点「💾 保存」<b>立即生效，无需重启服务</b>。</li>
+</ul>
+<p>不知道填多少？点「🔍 <b>检测建议值</b>」：对当前模型发约 20 个微小请求实测限流边界（约 10–30 秒），给出各并发档的成功 / 限流 / 失败 / 耗时表格和建议值，照抄即可。</p>
+
+<h3>2.2 上下文窗口 · 批量打包</h3>
+<p>字幕分批不再按固定条数切，而是按「<b>上下文窗口 − 输出预留 − 安全余量</b>」逐行累加整行打包：短行多装、长行少装，用满窗口、减少调用次数。窗口大小由「📐 <b>探测上下文</b>」自动获取，三层探测：</p>
+<ol>
+  <li>先查模型元数据；</li>
+  <li>再发一个超长请求，从网关的拒绝报文里读出实际上限；</li>
+  <li>仍拿不到就 64K / 32K / 16K / 8K 阶梯实测。</li>
+</ol>
+<div class="ok"><b>费用说明</b>：被拒的探测请求<b>不计费</b>；首个成功的请求按实际 tokens 计（一般不超过一次普通调用）。探测结果缓存在服务器，跨重启有效，换模型后再点一次即可。</div>
+</div>
+
+<h2>三、Token 用量</h2>
+<div class="step">
+<h3>3.1 汇总</h3>
+<p>入口：「⚙ 设置 → 📊 Token 用量」（或大模型设置弹窗里的跳转按钮）。汇总卡三块：</p>
+<ul>
+  <li><b>总计</b>：输入 / 输出 token、调用次数（网关没回 usage 的按字符估算，单独标出笔数）；</li>
+  <li><b>按模型</b>：每个模型的输入 / 输出 / 次数，按消耗从大到小；</li>
+  <li><b>按任务</b>：消耗最大的前 5 个任务，附阶段级分解。</li>
+</ul>
+
+<h3>3.2 明细与筛选</h3>
+<p>下方「📋 调用明细」逐笔列出：时间 / 模型 / 任务 / 阶段 / 输入 / 输出 / 耗时。带 <code>≈</code> 的是估算值。</p>
+<p>筛选条支持组合使用，<b>输入后直接回车即筛选</b>（或点「🔍 筛选」；「↺ 重置」清空全部条件）：</p>
+<table>
+  <tr><th>条件</th><th>说明</th></tr>
+  <tr><td>任务 ID</td><td>留空 = 全部任务</td></tr>
+  <tr><td>模型 / 阶段下拉</td><td>选项自动来自日志里出现过的值</td></tr>
+  <tr><td>起止日期</td><td>含当天；只填一端也行</td></tr>
+  <tr><td>耗时区间（秒）</td><td>闭区间，用来专挑慢请求</td></tr>
+</table>
+<p>底部翻页：<code>‹ ›</code> 前后翻页，每页 50 / 100 / 200 条可切换。</p>
+
+<div class="tip"><b>阶段名速查</b>：大模型分析字幕 = 字幕修订；断句整理、优化字幕、精剪校对、热词提取、连通性测试各占一个阶段名；短视频的以「短视频-」开头（如 短视频-内容提取）。</div>
+</div>
+
+<h2>四、热词库</h2>
+<div class="step">
+<h3>4.1 它管什么</h3>
+<p>人名、术语、产品名这类<b>专有名词</b>的词库。字幕生成时用它做识别偏置 — 词库里有「Slirn」，识别就不会写成「斯林」。公共库对所有任务生效。</p>
+
+<h3>4.2 手动维护</h3>
+<p>选分类 → 输入框加词（回车 / 「➕ 添加」）；词块上的 ✕ 删单个，分类工具栏「☑ 全选 / ⇄ 反选 / 🗑 删除选中」批量处理。</p>
+
+<h3>4.3 AI 热词分析</h3>
+<p>页面下方的折叠块「🤖 AI 热词分析」，适合视频专业词汇密集、懒得手打的场景：</p>
+<ol>
+  <li>展开后填需求描述（例：「这是一档讲 RAG 与向量数据库的播客，主持人叫张老师」）；</li>
+  <li>可选：粘贴文章 / 字幕 URL 让 AI 连内容一起分析（还可填区域提示，如 <code>#article</code> 或「找正文部分」）；</li>
+  <li>点「🔍 分析」→ 候选词以词块形式出现，<b>点击选中</b>要采纳的；</li>
+  <li>「➕ 选中的加入任务」（只给当前任务的字幕生成用）或「📚 选中的加入公共库」（全局）。</li>
+</ol>
+<div class="warn">AI 分析依赖大模型 — 先完成第一节的大模型设置。</div>
+</div>
+
+<h2>五、快捷键</h2>
+<div class="step">
+<p>「⚙ 设置 → ⌨ 快捷键」打开自定义弹窗：每个操作一个键帽，<b>点击键帽 → 按新键</b>即完成更换；<kbd>Esc</kbd> 取消录制；不支持组合键。改乱了点「↩️ 恢复默认」。快捷键作用于预览播放器等高频操作，熟练后可以完全脱离鼠标看片。</p>
+</div>
+
+<h2>六、登录日志</h2>
+<div class="step">
+<p>「⚙ 设置 → 📜 登录日志」列出<b>本人</b>最近的登录事件：✅ 成功 / ❌ 失败（含原因）/ 🚪 登出，每条附时间与 IP。</p>
+<p>最典型的用途是排查「我怎么突然被踢下线了」— 本系统<b>同一账号只保持一个会话</b>：别处登录会把当前会话踢掉。在这里看到一条不是你操作的成功登录记录，就说明账号在别处被使用了，建议立刻改密码。</p>
+</div>
+
+<h2>七、安全清单</h2>
+<div class="step">
+<ul>
+  <li>默认管理员账号 <code>admin / admin123!@#</code> — <b>登录后第一件事</b>到右上角用户名 →「用户管理」改掉，尤其计划用 <code>--listen</code> 对局域网 / 公网开放时；</li>
+  <li>API Key 只放服务器环境变量，界面里永远只填变量名（见 1.3）；</li>
+  <li>用量账本、登录日志都在服务器本地，不外发。</li>
+</ul>
+</div>
+
+</div>
+</body>
+</html>

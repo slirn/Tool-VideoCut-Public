@@ -8497,6 +8497,11 @@
       _closeHelpMenu();
       _showHelpDoc('short_video', '📖 短视频使用说明');
     }
+    else if (action === 'help-settings') {
+      // 设置功能使用说明书（⚙ 菜单六项：快捷键/热词库/Token 用量/大模型/系统/登录日志）
+      _closeHelpMenu();
+      _showHelpDoc('settings', '📖 设置使用说明');
+    }
     else if (action === 'help-close') {
       var hm = document.getElementById('slirn-help-modal');
       if (hm) hm.style.display = 'none';

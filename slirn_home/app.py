@@ -3549,6 +3549,7 @@ def _build_topbar(repo_root: str) -> str:
         '<div class="slirn-topbar-dropdown" id="slirn-help-dropdown" role="menu" hidden>'
         '<button type="button" class="slirn-topbar-menu-item" data-action="help-long" role="menuitem">📖 长视频使用帮助</button>'
         '<button type="button" class="slirn-topbar-menu-item" data-action="help-short" role="menuitem">📖 短视频使用帮助</button>'
+        '<button type="button" class="slirn-topbar-menu-item" data-action="help-settings" role="menuitem">📖 设置使用说明</button>'
         '<div class="slirn-topbar-menu-divider"></div>'
         '<button type="button" class="slirn-topbar-menu-item" data-action="import-long-params" role="menuitem">📥 导入长视频参数</button>'
         '<button type="button" class="slirn-topbar-menu-item" data-action="import-short-params" role="menuitem">📥 导入短视频参数</button>'
@@ -9169,7 +9170,9 @@ def _register_slirn_api(
     @app.app.get("/slirn/static/help/{name}.html")
     async def serve_help_doc(name: str):
         """REQ-20261022-145：使用说明文档（静态 HTML，前端弹窗展示）。"""
-        allowed = {"long_video", "short_video"}
+        # 2026-10-28：新增 settings（⚙ 设置菜单六项功能的使用说明书）；
+        # 白名单防路径穿越，加新帮助页时这里同步登记。
+        allowed = {"long_video", "short_video", "settings"}
         if name not in allowed:
             return JSONResponse({"ok": False, "error": "文档不存在"}, status_code=404)
         doc = Path(__file__).parent / "static" / "help" / f"{name}.html"
