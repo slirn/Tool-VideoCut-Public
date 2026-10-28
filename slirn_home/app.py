@@ -7927,6 +7927,16 @@ def _register_slirn_api(
         if not tid or not pid:
             return _err("缺少 task_id 或 project_id")
         since = (body.get("since") or "").strip() or None
+        # 2026-10-28：启动前预检 —— 没选源视频时流程会在「字幕提取」秒败，
+        # 与其让后台线程报错落状态条，不如启动前拦下直接 toast 指引
+        # （仿长视频 fine_cut_preflight；预检自身异常不拦启动）
+        try:
+            _pre = _sv_flow.flow_preflight(repo_root, tid, pid, since=since)
+            if not _pre.get("ok"):
+                return _ok("", started=False, preflight=_pre,
+                           toast=_pre.get("reason") or "请先在第 1 阶段选择源视频")
+        except Exception as _e:  # noqa: BLE001 — 预检异常不阻塞启动
+            log.warning("[sv-flow][%s] 预检异常（继续启动）：%s", tid, _e)
         try:
             started = _sv_flow.run_flow(repo_root, tid, pid, since=since)
         except Exception as e:  # noqa: BLE001

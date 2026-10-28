@@ -421,7 +421,47 @@ HANDLERS = {
 
 # ---------- 编排 ----------
 
-def run_flow(repo_root: Path | str, task_id: str, project_id: str, *,
+def flow_preflight(repo_root: Path | str, task_id: str, project_id: str,
+                   since: str | None = None) -> dict:
+    """启动前预检（2026-10-28，仿长视频 fine_cut_preflight）。
+
+    Stage 1（选源）是手动阶段、不进 STAGE_ORDER；没选源就跑流程时，
+    后台线程会在「字幕提取」秒败（「Stage 2 需要先在 Stage 1 选源视频」），
+    用户只看到状态条一个错、不知道下一步该干什么。改为启动前拦下，
+    toast 直接给指引。只拦「本次会跑到 stage2」的情况；since 跳过 stage2
+    时沿用各阶段自己的磁盘产物前置检查（更精确）。
+    返回 {ok, reason}，ok=True 放行（预检自身异常也不拦启动）。
+    """
+    try:
+        cfg = load_config(repo_root, task_id, project_id)
+        since_key = since or cfg.get("since") or STAGE_KEYS[0]
+        if since_key != "stage2_extract":
+            return {"ok": True, "reason": ""}
+        from slirn_home import short_video_service as svc
+        project = svc.load_project(Path(repo_root), task_id, project_id)
+        src_id = project.get("base_material_id") or ""
+        materials = project.get("materials") or []
+        has_src = any(
+            m.get("id") == src_id and m.get("kind") == "video"
+            for m in materials
+        )
+        if has_src:
+            return {"ok": True, "reason": ""}
+        n_vids = sum(1 for m in materials if m.get("kind") == "video")
+        hint = (f"（素材列表已有 {n_vids} 个视频，去第 1 阶段选其一即可）"
+                if n_vids else "")
+        return {
+            "ok": False,
+            "reason": ("尚未选择源视频：流程从「字幕提取」开始，"
+                       f"请先在第 1 阶段「选源视频」选定源视频{hint}"),
+        }
+    except Exception as e:  # noqa: BLE001 — 预检异常不拦启动（与长视频口径一致）
+        log.warning("[sv-flow][%s/%s] 预检异常（继续启动）：%s",
+                    task_id, project_id, e)
+        return {"ok": True, "reason": ""}
+
+
+def run_flow(repo_root: Path | str, task_id: str, project_id: str,
              since: str | None = None) -> bool:
     """启动后台守护线程跑流程；已在 running → False。"""
     if is_running(task_id, project_id):
