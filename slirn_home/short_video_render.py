@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from slirn_home import short_video_service as svc
+from slirn_home import hw_encode
 
 log = logging.getLogger(__name__)
 
@@ -325,6 +326,8 @@ def build_render_command(
     else:
         chain.append(f"{main_audio}anull[aout]")
 
+    # 硬件编码（hw_encode：nvenc→qsv→libx264 自动降级；quality 22 保持原口径）
+    _venc_args, _ = hw_encode.encoder_args(quality=22)
     cmd = [
         "ffmpeg", "-y",
         *input_args,
@@ -334,7 +337,7 @@ def build_render_command(
         "-threads", "1",
         "-filter_threads", "1",
         "-filter_complex_threads", "1",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+        *_venc_args,
         "-c:a", "aac", "-b:a", "160k",
         "-t", f"{total_duration:.3f}",
         "-movflags", "+faststart",

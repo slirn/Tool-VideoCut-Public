@@ -5756,6 +5756,7 @@ def _register_slirn_api(
             eta_sec=round(job.eta_sec, 1) if job.eta_sec >= 0 else None,
             error=job.error,
             output_url=job.output_url,
+            encoder=job.encoder,
             # REQ-20260923-NNN：失败/截断诊断用（done 时为空串）
             stderr_tail=(job.stderr_tail[-1000:] if job.state == "failed" else ""),
         )

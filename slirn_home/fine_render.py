@@ -26,6 +26,10 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+# 硬件编码参数选择（探测/降级逻辑在共享模块 hw_encode，短视频混编导出同用）：
+# quality 23 对标 libx264 fast crf 23；SLIRN_FINE_HW_ENC=0 强制关闭。
+from slirn_home.hw_encode import encoder_args as _fine_video_encoder_args  # noqa: E402
+
 
 # REQ-20260919-061：精剪视频·四素材合成器 — 数据结构辅助函数
 _FINE_MATERIAL_KINDS = ("video", "subtitle", "cover", "bg", "reference", "audio")
@@ -132,6 +136,12 @@ _FINE_OUTPUT_DEFAULTS = {
     "codec":       "h264",
     "audio_codec": "aac",
 }
+
+
+# ---- 硬件编码：独显/核显可用时最终导出/预览提速 ----
+# 探测/降级/参数选择在共享模块 hw_encode（短视频混编导出同用本套口径）；
+# quality 23 对标 libx264 fast crf 23。SLIRN_FINE_HW_ENC=0 强制关闭。
+
 
 
 # REQ-20260920-078：系统默认 BGM 备选列表（绝对路径硬编码，不动态扫描）。
@@ -672,7 +682,8 @@ def _maybe_prescale_image(path: Path, target_w: int, target_h: int, label: str,
 
 
 def _build_bg_layer_chain(
-    bg_idx: int, W: int, H: int, duration: float | None = None
+    bg_idx: int, W: int, H: int, duration: float | None = None,
+    rate: str = "30",
 ) -> list[str]:
     """REQ-20260919-063：bg 图透明区黑底 alpha 合成链。
 
@@ -686,16 +697,18 @@ def _build_bg_layer_chain(
       的音频分支在源 ~1104s 处被调度器静默截断（exit 0、stderr 无警告）。
       给 color 源加显式 duration 后视频分支在预期时长附近自然收口，输出 -t
       只作钳制；duration=None（probe 失败）保持旧行为（无限 + -shortest 兜底）。
+    - rate（REQ-20261028-NNN）：画布帧率，跟随源视频（见 _probe_video_fps）；
+      缺省 30 为旧行为兜底。
     返回：filter_complex chain 片段。
     """
     d = f":duration={duration:.3f}" if duration else ""
     if bg_idx >= 0:
         return [
-            f"color=size={W}x{H}:color=black:rate=30{d}[bg_b]",
+            f"color=size={W}x{H}:color=black:rate={rate}{d}[bg_b]",
             f"[{bg_idx}:v]scale={W}:{H},setsar=1[bg_img]",
             "[bg_b][bg_img]overlay=eof_action=pass[bg]",
         ]
-    return [f"color=size={W}x{H}:color=black:rate=30{d}[bg]"]
+    return [f"color=size={W}x{H}:color=black:rate={rate}{d}[bg]"]
 
 
 def _build_fine_filter(fc: dict, W: int, H: int) -> tuple[list[str], list[str], str]:
@@ -893,6 +906,9 @@ def _assemble_fine_filter(
                 pass
         canvas_bound = expected_output_sec - _cover_prefix + 0.5
 
+    # 3a-2. REQ-20261028-NNN（性能）：源帧率（画布/封面跟随；失败回 30 旧值）
+    canvas_fps = _probe_video_fps(Path(video_path))
+
     # 3b. 收集 inputs
     input_args: list[str] = []
     input_args += ["-ss", str(max(0.0, float(preview_start)))]
@@ -900,13 +916,22 @@ def _assemble_fine_filter(
         input_args += ["-t", str(duration)]
     input_args += ["-i", str(video_path)]
 
+    # REQ-20261028-NNN（性能）：bg 画布预合成（静态 bg → yuv420p h264 素材，
+    # 免去每帧 color+RGB→YUV+两层 overlay 的重复功，实测导出提速 ~2×）。
+    # 仅 canvas_bound 已知时启用（有限化边界语义不变）；失败回落旧三明治。
+    bg_canvas: Path | None = None
     if layout["bg"]["enabled"] and (materials.get("bg") or {}).get("path"):
         bg_path = _resolve_mat_abs(mgr, task_id, materials, "bg")
         if bg_path and bg_path.exists():
+            if canvas_bound is not None:
+                bg_canvas = _precompose_bg_canvas(bg_path, W, H, canvas_fps)
+            if bg_canvas is not None:
+                input_args += ["-stream_loop", "-1",
+                               "-t", f"{canvas_bound:.3f}", "-i", str(bg_canvas)]
             # REQ-20260929-NNN：bg 图输入有限化（-loop 1 无限产包的输入线程是
             # 长导出中音频被静默截断的触发方；边界与画布一致）。canvas_bound
             # 未知时保持旧行为（无限 loop）。
-            if canvas_bound is not None:
+            elif canvas_bound is not None:
                 input_args += ["-loop", "1", "-t", f"{canvas_bound:.3f}", "-i", str(bg_path)]
             else:
                 input_args += ["-loop", "1", "-i", str(bg_path)]
@@ -925,7 +950,9 @@ def _assemble_fine_filter(
         cover_path = _resolve_mat_abs(mgr, task_id, materials, "cover")
         if cover_path and cover_path.exists():
             cover_dur = float(layout["cover"].get("duration", 2.0))
-            input_args += ["-loop", "1", "-framerate", "30", "-t", f"{cover_dur:.2f}", "-i", str(cover_path)]
+            # REQ-20261028-NNN：封面输入帧率跟随画布（源帧率），与 intro 的 fps= 对齐
+            input_args += ["-loop", "1", "-framerate", canvas_fps,
+                           "-t", f"{cover_dur:.2f}", "-i", str(cover_path)]
             # 在 cover 之后追加一段等长静音输入；index = 当前 inputs_count
             input_args += ["-f", "lavfi", "-t", f"{cover_dur:.2f}", "-i", "anullsrc=r=44100:cl=stereo"]
         else:
@@ -1027,7 +1054,13 @@ def _assemble_fine_filter(
     bg_idx = -1
     if layout["bg"]["enabled"]:
         bg_idx = 1 if inputs_count >= 2 else -1
-    chain.extend(_build_bg_layer_chain(bg_idx, W, H, canvas_bound))
+    if bg_idx >= 0 and bg_canvas is not None:
+        # REQ-20261028-NNN（性能）：bg 已预合成为 yuv420p h264 画布（含黑底
+        # flatten + 拉伸），直接作画布输入 — 省掉每帧 color 生成 / RGB→YUV
+        # 全幅转换 / bg-over-black overlay，只保留视频 over 画布一层合成。
+        chain.append(f"[{bg_idx}:v]setsar=1[bg]")
+    else:
+        chain.extend(_build_bg_layer_chain(bg_idx, W, H, canvas_bound, rate=canvas_fps))
     cur = "[bg]"
 
     vc = layout["video"]
@@ -1152,7 +1185,7 @@ def _assemble_fine_filter(
         chain.append(
             f"[{cover_idx}:v]scale={W}:{H}:force_original_aspect_ratio=decrease,"
             f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black,"
-            f"setpts=PTS-STARTPTS,fps=30,setsar=1[intro]"
+            f"setpts=PTS-STARTPTS,fps={canvas_fps},setsar=1[intro]"
         )
         chain.append(f"[intro]{cur}concat=n=2:v=1:a=0[vout]")
         cur = "[vout]"
@@ -1433,13 +1466,14 @@ def _run_fine_render(
     # 静默截断且 exit 0）。expected 未知时退回 -shortest 旧行为。
     _expected = asm.get("expected_output_sec")
     _tail_args = ["-t", f"{_expected + 0.05:.3f}"] if _expected else ["-shortest"]
+    _enc_args, _enc_name = _fine_video_encoder_args()
     cmd = [
         "ffmpeg", "-y",
         *asm["input_args"],
         "-filter_complex", asm["filter_complex"],
         "-map", asm["final_map"],
         "-map", "[aout]",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        *_enc_args,
         "-c:a", "aac", "-b:a", "128k",
         *_tail_args,
         "-movflags", "+faststart",
@@ -1476,7 +1510,8 @@ def _run_fine_render(
         log.error("REQ-20260923: 预览渲染产物被截断: %s", _trunc)
         return {"ok": False, "error": _trunc}
 
-    return {"ok": True, "path": str(output_path.relative_to(mgr.tasks_dir.parent))
+    return {"ok": True, "encoder": _enc_name,
+            "path": str(output_path.relative_to(mgr.tasks_dir.parent))
             if output_path.is_absolute() else str(output_path)}
 
 
@@ -1521,6 +1556,7 @@ class _RenderJob:
     error: str = ""
     output_url: str = ""
     stderr_tail: str = ""
+    encoder: str = ""   # 本次导出实际使用的视频编码器（h264_nvenc / libx264）
     proc: Any = None
 
 
@@ -1641,6 +1677,84 @@ def _probe_video_duration_ms(mgr, tid: str) -> int:
         return int(sec * 1000)
     except Exception:
         return 0
+
+
+def _probe_video_fps(video_path: Path) -> str:
+    """ffprobe 拿源视频帧率（"25/1" 形式）。失败返回 "30"。
+
+    REQ-20261028-NNN（性能）：画布/封面帧率此前硬编码 30fps，25fps 课程源会被
+    强行补帧到 30fps 输出（多 20% 帧要滤镜+编码，纯浪费且帧重复）。改为画布
+    帧率跟随源；探测失败保持 30（旧行为）。
+    """
+    try:
+        pr = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=r_frame_rate",
+             "-of", "default=nw=1:nk=1", str(video_path)],
+            capture_output=True, text=True, timeout=10, encoding="utf-8",
+        )
+        val = (pr.stdout or "").strip().splitlines()[0].strip() if pr.stdout else ""
+        if "/" in val:
+            num, _, den = val.partition("/")
+            if num.strip().isdigit() and den.strip().isdigit() and int(den) != 0:
+                return val
+        elif val.isdigit() and int(val) > 0:
+            return f"{val}/1"
+    except Exception:
+        pass
+    return "30"
+
+
+def _precompose_bg_canvas(bg_path: Path, w: int, h: int, fps: str) -> Path | None:
+    """REQ-20261028-NNN（性能）：bg 静态图预合成为 yuv420p h264 画布素材。
+
+    原滤镜三明治（color 黑底 + bg 图 scale + overlay）每一帧都要：生成黑画布、
+    把 RGB 图转 YUV 再放大到画布、做一次全幅 alpha 混合 — 全是静态内容的重复
+    功（实测占完整导出耗时的 ~40%，120s 窗口 28.2s→16.8s）。预合成方案：PIL
+    一次拉伸到 w×h（透明像素 flatten 黑底，与「黑底 overlay」语义逐像素一致）
+    → 2 秒 h264（crf 18 stillimage，yuv420p 直供无转换）→ 渲染时
+    -stream_loop -1 当画布输入，图里只剩「视频 over 画布」一层 overlay。
+
+    产物是 bg 同目录的 .bgcanvas_* 缓存文件（名含尺寸/帧率/mtime，自失效；
+    同 _maybe_prescale_image 的 .req079 前例）。任何一步失败返回 None，
+    调用方回落旧三明治链（保底）。
+    """
+    if bg_path.suffix.lower() not in _PIL_IMAGE_EXTS:
+        return None
+    try:
+        fps_tag = str(fps).replace("/", "-")
+        cache = bg_path.with_name(
+            f".bgcanvas_{bg_path.stem}_{w}x{h}_{fps_tag}_{int(bg_path.stat().st_mtime)}.mp4")
+        if cache.exists() and cache.stat().st_size > 0:
+            return cache
+        from PIL import Image as _PILImage
+        with _PILImage.open(bg_path) as im:
+            if im.mode in ("RGBA", "LA", "PA"):
+                base = _PILImage.new("RGB", im.size, (0, 0, 0))
+                base.paste(im, mask=im.split()[-1])
+                im2 = base
+            else:
+                im2 = im.convert("RGB")
+            im2 = im2.resize((w, h), _PILImage.LANCZOS)
+            png_tmp = cache.with_name(cache.name + ".tmp.png")
+            im2.save(png_tmp)
+        try:
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-loop", "1", "-framerate", str(fps), "-t", "2",
+                 "-i", str(png_tmp),
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+                 "-tune", "stillimage", "-pix_fmt", "yuv420p", str(cache)],
+                capture_output=True, timeout=60)
+            if r.returncode != 0 or not cache.exists() or cache.stat().st_size == 0:
+                log.warning("[bg-canvas] 预合成编码失败 rc=%s，回落三明治链", r.returncode)
+                return None
+        finally:
+            png_tmp.unlink(missing_ok=True)
+        log.info("[bg-canvas] bg 预合成画布 %sx%s@%s → %s", w, h, fps, cache.name)
+        return cache
+    except Exception as e:  # noqa: BLE001
+        log.warning("[bg-canvas] 预合成失败，回落三明治链: %s", e)
+        return None
 
 
 def _verify_render_duration(out_path: Path, expected_sec: float | None) -> str:
@@ -1818,6 +1932,9 @@ def _run_fine_render_locked(job: _RenderJob, tid: str, mgr, out_path: Path,
     _expected_sec = asm.get("expected_output_sec")
     _tail_args = (["-t", f"{_expected_sec + 0.05:.3f}"] if _expected_sec
                   else ["-shortest"])
+    # 硬件编码（NVENC 可用则 h264_nvenc，否则 libx264；单进程与 pass2 共用）
+    _enc_args, _enc_name = _fine_video_encoder_args()
+    job.encoder = _enc_name
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         "ffmpeg", "-y",
@@ -1825,7 +1942,7 @@ def _run_fine_render_locked(job: _RenderJob, tid: str, mgr, out_path: Path,
         "-filter_complex", asm["filter_complex"],
         "-map", asm["final_map"],
         "-map", "[aout]",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        *_enc_args,
         "-c:a", "aac", "-b:a", "128k",
         *_tail_args,
         "-movflags", "+faststart",
@@ -1900,7 +2017,7 @@ def _run_fine_render_locked(job: _RenderJob, tid: str, mgr, out_path: Path,
                 fc_video + f";\n[{asm['audio_input_idx']}:a]anull[aout]",
                 "-map", asm["final_map"],
                 "-map", "[aout]",
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                *_enc_args,
                 "-c:a", "aac", "-b:a", "128k",
                 *_tail_args,
                 "-movflags", "+faststart",

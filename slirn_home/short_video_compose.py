@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from slirn_home import short_video_service as svc
+from slirn_home import hw_encode
 
 log = logging.getLogger(__name__)
 
@@ -912,13 +913,16 @@ def build_compose_command(spec: ComposeSpec, output_path: Path,
         )
         final_map = "[vfinal]"
 
+    # 硬件编码（hw_encode 探测：nvenc→qsv→libx264 自动降级，无显卡机器
+    # 走原 libx264；quality 22 保持本阶段原 crf 22 口径）
+    _venc_args, _ = hw_encode.encoder_args(quality=22)
     cmd = [
         "ffmpeg", "-y",
         *input_args,
         "-filter_complex", ";\n".join(chain),
         "-map", final_map,
         "-map", "[aout]",
-        "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+        *_venc_args,
         "-c:a", "aac", "-b:a", "160k",
     ]
     if expected is not None:
