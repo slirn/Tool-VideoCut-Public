@@ -1368,8 +1368,10 @@ def _render_optimize_zone(task_id: str, t, mgr: TaskManager) -> str:
                          '专有名词/术语的识别和判定会更准）</div>')
         return f'''<div class="slirn-card" style="margin-top:16px;">
         <div class="slirn-panel-header"><div class="slirn-panel-title">✨ 优化字幕 · 不明确字词</div></div>
-        <div class="slirn-form-hint">把粗剪成片 <b>{_esc(artifact.name)}</b>{_esc(art_disp)} + 任务热词交给 ASR
-        重新识别字幕（只识别文字，不区分说话人），再用大模型做语义分析：提取<b>不明确的字/词</b>
+        <div class="slirn-form-hint">对粗剪成片 <b>{_esc(artifact.name)}</b>{_esc(art_disp)} 的字幕做语义分析：
+        行集<b>优先直读合成时随片生成的字幕</b>（与成片同源，秒级就绪），随片字幕缺失或对不上时
+        回落 ASR 重新识别（只识别文字，不区分说话人）；先做<b>断句整理</b>（合并过碎的行，
+        一行 10~20 字、一句完整的话或逗号连接的两小句、行尾无标点），再用大模型提取<b>不明确的字/词</b>
         （疑似误识别、语义不通、与热词矛盾），统计出现次数并定位位置。替换值可逐处编辑，
         人工分辨确认后保存替换对应关系，并可导出优化后的成片字幕 SRT。</div>
         {hw_block}
@@ -1613,6 +1615,9 @@ def _render_optimize_zone(task_id: str, t, mgr: TaskManager) -> str:
     n_lines = est["lines"]
     n_edits = int(est.get("line_edits") or 0)
     edit_stat = f" · 整句替换 <b>{n_edits}</b> 行" if n_edits else ""
+    _mg = data.get("merge") or {}
+    merge_stat = (f" · 断句整理 {_mg.get('before')}→{_mg.get('after')} 行"
+                  if _mg.get("before") and _mg.get("after") else "")
     n_marks = int(est.get("line_marks") or 0)
     # 删除统计：行数 + 总时长（REQ-20260922-NNN：统计被删除的记录数和总时长）
     if n_marks:
@@ -1693,7 +1698,7 @@ def _render_optimize_zone(task_id: str, t, mgr: TaskManager) -> str:
     )
     return f'''<div class="slirn-card" style="margin-top:16px;">
         <div class="slirn-panel-header"><div class="slirn-panel-title">✨ 优化字幕 · 不明确字词</div></div>
-        <div class="slirn-sub-meta">识别 {n_lines} 行 · 不明确 {est["occurrences"]} 处（{est["words"]} 个词）
+        <div class="slirn-sub-meta">识别 {n_lines} 行{merge_stat} · 不明确 {est["occurrences"]} 处（{est["words"]} 个词）
         · 生效替换 <b>{est["applied"]}</b> 处 · 未采纳 {est["skipped"]} 处{edit_stat}{mark_stat}{split_stat} · 模型 {model_disp}
         {" · ✅ 已确认" if confirmed else ""}</div>
         {stale_note}
@@ -1733,6 +1738,9 @@ def _render_optimize_zone(task_id: str, t, mgr: TaskManager) -> str:
             {cut_video_btn}
             <button class="slirn-btn" data-action="opt-resplice" data-task-id="{_esc(task_id)}"
                     title="按当前剪辑计划即时重算拼接字幕（optimize_compose.srt）：删除内容剔除 + 时间轴前移，不编码视频">🔄 重新拼接字幕</button>
+            <button class="slirn-btn" data-action="optimize-start" data-task-id="{_esc(task_id)}"
+                    data-has="1"
+                    title="放弃当前结果重新分析（优先直读随片字幕，缺失时识别成片）：覆盖现有结果、重置全部采纳/删除/切分决定，并清除旧优化成片 — 需二次确认">♻️ 重新优化字幕</button>
         </div>
         <div id="slirn-opt-status" class="slirn-status-msg" style="{'display:none;' if job_state != 'running' else ''};"
              data-task-id="{_esc(task_id)}" data-state="{_esc(job_state)}">{running_html}</div>
@@ -9674,8 +9682,8 @@ def _register_slirn_api(
         )
         if not started:
             return _ok("", toast="⏳ 该任务已在优化中，请等待完成")
-        return _ok("", toast="✨ 优化字幕已开始（先识别成片，再大模型分析，可离开本页）",
-                   job={"state": "running", "stage": "加载模型"})
+        return _ok("", toast="✨ 优化字幕已开始（直读随片字幕 → 断句整理 → 大模型分析，可离开本页）",
+                   job={"state": "running", "stage": "准备字幕行集"})
 
     @app.app.post("/slirn/api/optimize_subtitle_status")
     async def optimize_subtitle_status(body: dict = Body(default_factory=dict)):

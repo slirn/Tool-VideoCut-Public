@@ -1,13 +1,18 @@
-"""优化字幕服务（成片重识别 + 不明确字词提取替换）— REQ-20260917-030。
+"""优化字幕服务（成片字幕行集 + 不明确字词提取替换）— REQ-20260917-030。
 
-把粗剪合成成片（rough_compose.mp4）+ 任务热词交给 ASR（asr_service 同链路，
-sd=False 只识别字幕、不分离说话人），成片时间基的字幕行集再交大模型语义分析：
+把粗剪合成成片（rough_compose.mp4）的字幕行集 + 任务热词交大模型语义分析：
 提取「不明确的字/词」（疑似同音/近音误识别、语义不通、与热词表冲突的片段），
 逐处给出替换建议与理由。人工逐处分辨（采纳/不采纳/改替换值）后保存：
 替换对应关系 + 替换后行文本（new_text）+ 按目标词聚合统计落盘
 optimize_subtitle.json，阶段推进 FINE_SUBTITLE_REVIEWED。
 
 设计要点（DESIGN-20260917-030）：
+- **行集优先随片字幕直读**（rough_compose.srt 与优化输入行同源、时间轴已
+  在成片坐标系，秒级）；SRT 缺失/行数与切分保留单元不一致时回落成片 ASR
+  重识别（asr_service 同链路，sd=False；88 分钟片 CPU 上 10-20 分钟）
+- **断句整理**（2026-10-28）：行集先过一遍合并 — 一行 10~20 字、一句完整
+  的话或逗号连接的两小句、行尾无标点；LLM 提议分组，服务端保全校验
+  （去标点文字必须与原行拼接逐字一致），失败退回原行
 - 识别复用 asr_service 内部函数（模型单例 + 16k 单声道抽取），绝不写
   subtitle.json/srt —— 那是切分/修订全链路的根基产物
 - 替换是局部片段级：before 必须逐字摘自行文本、after ≠ before、重叠剔除
@@ -20,6 +25,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -32,8 +38,8 @@ log = logging.getLogger(__name__)
 
 OPTIMIZE_JSON = "optimize_subtitle.json"
 
-# 分批行数：与 fine_service 同口径，40 行/批
-BATCH_SIZE = 40
+# 分批：与 revision_service 同口径 — pack_batches 按上下文预算整行打包；
+# anthropic 协议必须显式传 max_tokens（默认 4096，大批可能截断），调用处传 8192
 
 OPT_SYSTEM = (
     "你是字幕校对助手。用户给你一段视频重新识别出的字幕行列表（JSON 数组，"
@@ -537,6 +543,297 @@ def job_status(task_id: str) -> dict | None:
         return dict(j) if j else None
 
 
+# token 拼接比对前剔除的空白与标点（修订/标点差异不应否决时间戳恢复）
+_TOKEN_STRIP_PUNCT = re.compile(
+    r"[\s，。！？；：、,.!?;:~～…「」『』“”\"'（）()【】\[\]·-]+")
+
+
+def _segments_from_compose_srt(outputs_dir: Path, video_path: Path) -> list[dict] | None:
+    """随片字幕直读成优化输入（跳过成片 ASR，2026-10-28 提速）。
+
+    背景：优化字幕原本对成片整体重跑 ASR（88 分钟片 CPU 上 10-20 分钟，
+    且长音频特征数组偶发 numpy MemoryError），但大模型只消费每行的
+    id+text —— 而 rough_compose.srt 与优化输入行**同源**（都来自切分保留
+    单元）、时间轴已在成片坐标系（合成时平移过），直接解析即得行集。
+
+    字级时间戳（tokens/token_ts，行切分功能用）从 subtitle.json 按父句
+    恢复：每行的 source_i 指回原句，行区间（原片坐标）内中心点落在区间
+    中的 token 即该行 token，拼接文本与行文本一致（去标点）才采信；
+    随成片时间轴按行 delta（= 成片起点 - 原片起点，每行恒定）平移。
+    实测恢复率 ≈97%，未恢复的行（文本被修订改过）不带 tokens，
+    行切分按比例降级（与 cutlist 同口径）。
+
+    返回 None（调用方回落成片 ASR）当：随片 SRT 不存在 / 行数与当前切分
+    保留单元数不一致（成片或切分决策已变，须以成片实测为准）/ 构建切分
+    清单失败。
+    """
+    from slirn_home import asr_service, compose_service, cutlist_service, revision_service
+
+    srt_path = Path(video_path).with_suffix(".srt")
+    if not srt_path.is_file():
+        return None
+    try:
+        entries = compose_service.parse_srt(
+            srt_path.read_text(encoding="utf-8-sig"))
+    except OSError:
+        return None
+    if not entries:
+        return None
+
+    sub_meta = asr_service.load_subtitle(outputs_dir)
+    rev = revision_service.load_revision(outputs_dir)
+    saved = cutlist_service.load_cutlist(outputs_dir)
+    try:
+        cl = cutlist_service.build_cutlist(
+            sub_meta, rev,
+            manual_marks=(saved or {}).get("manual_marks") if saved else None,
+            actions=(saved or {}).get("actions") if saved else None)
+        units = cutlist_service.effective_keep_units(cl)
+    except Exception:  # noqa: BLE001 — 切分清单构建失败 → 回落 ASR
+        return None
+    if not units or len(units) != len(entries):
+        return None
+
+    # subtitle.json 句 id → (tokens, token_ts)（等长可信的才有）
+    sent_map: dict[int, tuple] = {}
+    for s in (sub_meta or {}).get("segments") or []:
+        toks, tts = s.get("tokens"), s.get("token_ts")
+        if toks and tts and len(toks) == len(tts):
+            sent_map[_safe_int(s.get("i"))] = (toks, tts)
+
+    segs: list[dict] = []
+    for k, (u, e) in enumerate(zip(units, entries)):
+        seg = {
+            "i": k + 1,
+            "start_ms": int(e["start_ms"]),
+            "end_ms": int(e["end_ms"]),
+            "start": cutlist_service.ms2srt(int(e["start_ms"])),
+            "end": cutlist_service.ms2srt(int(e["end_ms"])),
+            "text": str(e.get("text", "")),
+        }
+        # 字级时间戳恢复：行区间（原片坐标）内取父句 token（中心点命中），
+        # 拼接文本对得上才采信 → 整句未拆 / 拆分行 / 热词未改行全覆盖，
+        # 改过文本的行放弃（下游比例降级）
+        parent = sent_map.get(_safe_int(u.get("source_i")))
+        if parent:
+            toks, tts = parent
+            lo, hi = int(u["start_ms"]), int(u["end_ms"])
+            idx = [j for j, (a, b) in enumerate(tts) if lo <= (a + b) / 2 <= hi]
+            joined = _TOKEN_STRIP_PUNCT.sub("", "".join(toks[j] for j in idx))
+            if idx and joined == _TOKEN_STRIP_PUNCT.sub("", seg["text"]):
+                delta = seg["start_ms"] - lo
+                seg["tokens"] = [toks[j] for j in idx]
+                seg["token_ts"] = [
+                    [min(max(int(tts[j][0]) + delta, seg["start_ms"]), seg["end_ms"]),
+                     min(max(int(tts[j][1]) + delta, seg["start_ms"]), seg["end_ms"])]
+                    for j in idx
+                ]
+        segs.append(seg)
+    return segs
+
+
+# =============== 断句整理（2026-10-28：一行 10~20 字、行尾无标点） ===============
+# 用户反馈优化字幕行「过碎」：ASR 句级切分 + 上游行切分会产生大量几个字的行，
+# 播放时一闪而过看不清。LLM 决定「相邻行怎么分组合并 + 标点怎么放」，
+# 服务端强校验「去标点后的文字必须与组内原行顺序拼接逐字一致」——
+# 合并是增强不是关键路径：任何失败都退回保持原行，绝不阻塞主流程。
+
+MERGE_SYSTEM = (
+    "你是字幕断句整理助手。用户给你一段视频的字幕行列表（JSON 数组，每项含行 id、文本、"
+    "起止秒与同上一行的时间间隔 gap_s），行按时间顺序排列、文本来自同一段录音的连续转写。\n"
+    "这些行的断句往往过碎：有的行只有几个字，播放时一闪而过看不清。"
+    "请把相邻的行合并成适合观看的显示行。\n\n"
+    "合并规则：\n"
+    "- 字数：一行中文 10~20 个字（不含标点）；已有 10~20 字且语义完整的行单独成行。\n"
+    "  其他语言按等效阅读量把握（如英文约 5~12 个词）。\n"
+    "- 完整性：一行必须是一句完整的话，或衔接紧密的两小句（两小句中间用一个中文逗号「，」分隔）；"
+    "三小句以上不要塞进一行。\n"
+    "- 标点：行内只保留逗号（原有的句号/问号/叹号/分号改写为逗号或删去）；"
+    "行尾不得有任何标点（原有行尾标点一律删去）。\n"
+    "- 停顿：gap_s ≥ 2.0 秒的相邻行不要合并（画面停顿处断行更自然）。\n"
+    "- 保真：除标点的增删改外不得增加、删除或改写任何文字——合并后去掉全部标点的文字，"
+    "必须与组内各行文字按顺序拼接的结果完全一致（语气词、疑似错别字都原样保留，"
+    "错别字由后续环节处理）。\n"
+    "- 只能合并相邻的行；单行超过 20 字时保持原样（不要试图拆分）。\n\n"
+    "输出要求：只输出 JSON 数组，不要任何其他文字。数组按顺序完整覆盖输入的每一行恰好一次，"
+    "每项格式：\n"
+    '{"ids": ["行id", "行id"], "text": "合并并整理标点后的整行文本"}\n'
+    "无需合并、标点也无需改动的行也要输出（ids 只含它自身、text 为整理后的文本）。"
+)
+
+# 句末点号 → 逗号（不含 ASCII 句点，防误伤 "3.5" 这类小数）
+_MERGE_SENT_END = re.compile(r"[。！？；!?;]+")
+_MERGE_TRAIL_PUNCT = re.compile(r"[\s，。！？；：、,.!?;:~～…—·]+$")
+_MERGE_LEAD_COMMA = re.compile(r"^[\s，、]+")
+
+
+def _norm_line_punct(text: str) -> str:
+    """行文本标点规整：句中句末点号 → 中文逗号、叠逗号合一、行首行尾去标点。
+
+    只动标点不碰文字 — 断句整理与兜底拼接共用（保真校验以去标点文本为准，
+    规整不会改变已通过校验的文字内容）。
+    """
+    t = _MERGE_SENT_END.sub("，", str(text or ""))
+    t = re.sub(r"，{2,}", "，", t)
+    t = _MERGE_LEAD_COMMA.sub("", t)
+    return _MERGE_TRAIL_PUNCT.sub("", t)
+
+
+def _merge_user_prompt(lines: list[dict]) -> str:
+    """构造断句整理 user 消息：带时间信息（gap_s 供模型避开长停顿处合并）。"""
+    return ("字幕行列表（start/end 为秒，gap_s 为与上一行的间隔）：\n" + json.dumps(
+        [{"id": str(ln["id"]), "text": str(ln.get("text", "")),
+          "start": ln.get("start"), "end": ln.get("end"), "gap_s": ln.get("gap_s")}
+         for ln in lines], ensure_ascii=False))
+
+
+def _merge_singles(lines: list[dict]) -> list[dict]:
+    """整批保持原行（服务端做标点规整）— 模型失败/输出不可用时的兜底。"""
+    return [{"ids": [str(ln["id"])], "text": _norm_line_punct(str(ln.get("text", ""))),
+             "fallback": False} for ln in lines]
+
+
+def parse_merge_groups(raw: str, lines: list[dict]) -> list[dict]:
+    """防御式解析断句整理输出 → 按序合并方案（与服务端校验/兜底）。
+
+    逐项前缀匹配：组内 id 必须从当前进度起与输入行序完全一致（只认相邻合并）；
+    组文本去标点后必须等于组内各行文本顺序拼接（去标点），否则用服务端
+    拼接 + _norm_line_punct 兜底（fallback:true）。无效项跳过、漏覆盖的
+    尾行按原行补齐 — 输出恒为「按序完整覆盖每一行恰好一次」的分组列表。
+    解析失败抛 ValueError（调用方减半重试）。
+    """
+    cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw or "").strip()
+    start, end = cleaned.find("["), cleaned.rfind("]")
+    if start >= 0 and end > start:
+        cleaned = cleaned[start:end + 1]
+    try:
+        arr = json.loads(cleaned)
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"模型输出不是合法 JSON: {e}") from e
+    if not isinstance(arr, list):
+        raise ValueError("模型输出不是 JSON 数组")
+
+    strip = lambda t: _TOKEN_STRIP_PUNCT.sub("", t)
+    groups: list[dict] = []
+    pos = 0
+    for item in arr:
+        if pos >= len(lines) or not isinstance(item, dict):
+            continue
+        ids = item.get("ids")
+        if not isinstance(ids, list) or not ids:
+            continue
+        id_strs = [str(x) for x in ids]
+        k = pos + len(id_strs)
+        if k > len(lines) or [str(lines[j]["id"]) for j in range(pos, k)] != id_strs:
+            continue  # 不相邻/越界/乱序 → 跳过该组（行留给兜底）
+        texts = [str(lines[j].get("text", "")) for j in range(pos, k)]
+        text = _norm_line_punct(str(item.get("text") or ""))
+        ok = bool(strip(text)) and strip(text) == strip("".join(texts))
+        groups.append({
+            "ids": id_strs,
+            "text": text if ok else _norm_line_punct("".join(texts)),
+            "fallback": not ok,
+        })
+        pos = k
+    for j in range(pos, len(lines)):  # 模型漏覆盖的尾行 → 原行
+        groups.append({"ids": [str(lines[j]["id"])],
+                       "text": _norm_line_punct(str(lines[j].get("text", ""))),
+                       "fallback": False})
+    return groups
+
+
+def _merge_segments_llm(
+    segments: list[dict], entry: dict | None, task_id: str,
+    on_stage: Callable[[str, float], None] | None = None,
+) -> tuple[list[dict], dict]:
+    """并发跑断句整理批 → 重建行集（合并行时间跨度 = 首行起 ~ 末行止，
+    tokens/token_ts 逐行拼接—— constituents 全带等长 token 才拼接，否则
+    整行不带（行内切分按比例降级，与直读路径同口径）。永不抛异常。"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from slirn_home.revision_service import _call_llm, _effective_workers, pack_batches
+    from slirn_home.cutlist_service import ms2srt
+
+    n = len(segments)
+    if n < 2:
+        return segments, {"before": n, "after": n, "merged": 0, "fallback": 0}
+
+    lines: list[dict] = []
+    prev_end: int | None = None
+    for s in segments:
+        pe = prev_end if prev_end is not None else int(s["start_ms"])
+        lines.append({
+            "id": str(s["i"]), "text": str(s.get("text", "")),
+            "start": round(int(s["start_ms"]) / 1000.0, 1),
+            "end": round(int(s["end_ms"]) / 1000.0, 1),
+            "gap_s": round(max(0, int(s["start_ms"]) - pe) / 1000.0, 1),
+        })
+        prev_end = max(prev_end or int(s["end_ms"]), int(s["end_ms"]))
+
+    def _one_safe(batch: list[dict]) -> list[dict]:
+        try:
+            raw = _call_llm(MERGE_SYSTEM, _merge_user_prompt(batch), entry,
+                            max_tokens=8192, temperature=0.2,
+                            usage_ctx={"task_id": task_id, "stage": "断句整理"})
+            return parse_merge_groups(raw, batch)
+        except ValueError as e:
+            if len(batch) == 1:
+                log.warning("[opt][%s] 断句整理批失败（%d 行保持原样）: %s",
+                            task_id, len(batch), e)
+                return _merge_singles(batch)
+            mid = len(batch) // 2
+            log.warning("[opt][%s] 断句整理批解析失败，减半重试（%d 行）: %s",
+                        task_id, len(batch), e)
+            return _one_safe(batch[:mid]) + _one_safe(batch[mid:])
+        except Exception as e:  # noqa: BLE001 — 合并是增强，失败不阻塞
+            log.warning("[opt][%s] 断句整理批失败（%d 行保持原样）: %s",
+                        task_id, len(batch), e)
+            return _merge_singles(batch)
+
+    batches = pack_batches(lines, entry)
+    results: list[list[dict] | None] = [None] * len(batches)
+    with ThreadPoolExecutor(
+        max_workers=max(1, min(_effective_workers(), len(batches))),
+        thread_name_prefix="opt-merge",
+    ) as pool:
+        futs = {pool.submit(_one_safe, b): i for i, b in enumerate(batches)}
+        done = 0
+        for fut in as_completed(futs):
+            results[futs[fut]] = fut.result()
+            done += 1
+            if on_stage:
+                on_stage(f"断句整理 ({done}/{len(batches)})",
+                         39.0 + done / len(batches) * 6.0)
+
+    by_id = {str(s["i"]): s for s in segments}
+    out: list[dict] = []
+    merged_groups = fallback_groups = 0
+    for r in results:
+        for g in r or []:
+            srcs = [by_id[i] for i in g["ids"] if i in by_id]
+            if not srcs:
+                continue
+            seg = {
+                "i": len(out) + 1,
+                "start_ms": int(srcs[0]["start_ms"]),
+                "end_ms": int(srcs[-1]["end_ms"]),
+                "start": ms2srt(int(srcs[0]["start_ms"])),
+                "end": ms2srt(int(srcs[-1]["end_ms"])),
+                "text": g["text"],
+            }
+            if len(srcs) > 1:
+                merged_groups += 1
+            if g.get("fallback"):
+                fallback_groups += 1
+            if all(len(s.get("tokens") or []) == len(s.get("token_ts") or [])
+                   and s.get("tokens") for s in srcs):
+                seg["tokens"] = [t for s in srcs for t in s["tokens"]]
+                seg["token_ts"] = [list(ts) for s in srcs for ts in s["token_ts"]]
+            out.append(seg)
+    return out, {"before": n, "after": len(out),
+                 "merged": merged_groups, "fallback": fallback_groups}
+
+
 def start_job(
     task_id: str,
     video_path: Path,
@@ -580,19 +877,35 @@ def start_job(
             log.info("[opt][%s] %s", task_id, name)
 
         try:
-            # ---- ① ASR 识别成片（复用字幕生成链路；不写 subtitle.json） ----
+            # ---- ① 成片行集：优先随片字幕直读（秒级）；不可用回落成片 ASR ----
+            # ASR 对 88 分钟成片要 10-20 分钟（CPU）且长音频特征数组偶发
+            # MemoryError；而随片 SRT 与优化输入行同源、时间轴已在成片坐标系。
             from slirn_home import asr_service
 
-            _stage("加载模型", 5.0)
             hotword_str = " ".join(w.strip() for w in hotwords if w and w.strip())
-            _stage("识别粗剪成片", 15.0)
-            state = asr_service._run_recognition(str(video_path), hotword_str, False)
-            segments = asr_service.segments_from_sentences(state.get("sentences") or [])
-            if not segments:
-                raise RuntimeError("成片识别结果为空（无有效字幕行）")
-            job["lines"] = len(segments)
-            _stage("识别完成", 40.0)
-            log.info("[opt][%s] 成片识别：%d 行", task_id, len(segments))
+            segments = None
+            asr_source = "compose-srt"
+            _stage("读取随片字幕", 5.0)
+            try:
+                segments = _segments_from_compose_srt(outputs_dir, video_path)
+            except Exception as e:  # noqa: BLE001 — 直读失败回落 ASR
+                log.warning("[opt][%s] 随片字幕直读失败，回落成片 ASR: %s", task_id, e)
+            if segments:
+                job["lines"] = len(segments)
+                _stage("字幕行集就绪", 38.0)
+                log.info("[opt][%s] 随片字幕直读：%d 行（跳过成片 ASR）",
+                         task_id, len(segments))
+            else:
+                _stage("加载模型", 8.0)
+                _stage("识别粗剪成片", 15.0)
+                state = asr_service._run_recognition(str(video_path), hotword_str, False)
+                segments = asr_service.segments_from_sentences(state.get("sentences") or [])
+                if not segments:
+                    raise RuntimeError("成片识别结果为空（无有效字幕行）")
+                job["lines"] = len(segments)
+                _stage("识别完成", 40.0)
+                log.info("[opt][%s] 成片识别：%d 行", task_id, len(segments))
+                asr_source = "seaco-paraformer"
 
             # ---- ② 大模型分批提取不明确字词 ----
             def _analyze(batch: list[dict], strict: bool = False) -> dict[str, list[dict]]:
@@ -602,7 +915,9 @@ def start_job(
 
                 system = OPT_SYSTEM + (OPT_STRICT_SUFFIX if strict else "")
                 try:
-                    raw = _call_llm(system, build_user_prompt(task_name, hotwords, batch), entry)
+                    raw = _call_llm(system, build_user_prompt(task_name, hotwords, batch),
+                                entry, max_tokens=8192,
+                                usage_ctx={"task_id": task_id, "stage": "字幕优化"})
                     return parse_occurrences(raw, batch)
                 except ValueError as e:
                     if len(batch) == 1:
@@ -615,17 +930,50 @@ def start_job(
                     return {**_analyze(batch[:mid], strict), **_analyze(batch[mid:], strict)}
 
             def _analyze_all(strict: bool = False) -> dict[str, list[dict]]:
+                """并发跑批（与修订同口径）：撞限流时 _chat_completion 的
+                _pause_all 让各 worker 联动退避（发起前 _wait_pause），取代
+                原批间 sleep 0.6s。found 按行 id 归并，批序无关（落盘前
+                sorted(found, key=int) 统一排序）；确定性失败上抛终止 job（原语义）。"""
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                from slirn_home.revision_service import _effective_workers
+
                 found: dict[str, list[dict]] = {}
-                for bi, batch in enumerate(batches):
-                    _stage(f"大模型分析 ({bi + 1}/{len(batches)})" + ("·复检" if strict else ""),
-                           40 + (bi + 1) / max(1, len(batches)) * 50)
-                    found.update(_analyze(batch, strict))
-                    if bi < len(batches) - 1:
-                        time.sleep(0.6)  # 批间间隔，降低限流概率
+                if not batches:
+                    return found
+                with ThreadPoolExecutor(
+                        max_workers=max(1, min(_effective_workers(), len(batches))),
+                        thread_name_prefix="optimize") as pool:
+                    futs = [pool.submit(_analyze, b, strict) for b in batches]
+                    done = 0
+                    for fut in as_completed(futs):
+                        found.update(fut.result())
+                        done += 1
+                        _stage(f"大模型分析 ({done}/{len(batches)})" + ("·复检" if strict else ""),
+                               45 + done / len(batches) * 45)
                 return found
 
+            # ---- ①½ 断句整理：合并过碎行（一行 10~20 字、句尾无标点，2026-10-28）----
+            # 随片直读的行集沿用切分/ASR 的碎粒度（几个字的行一闪而过）；
+            # 合并由 LLM 提议、服务端保全校验，失败退回原行（不阻塞）。
+            merge_stat = None
+            if len(segments) >= 2:
+                _stage("断句整理", 39.0)
+                try:
+                    segments, merge_stat = _merge_segments_llm(
+                        segments, entry, task_id,
+                        on_stage=lambda nm, pct: _stage(nm, pct))
+                    job["lines"] = len(segments)
+                    log.info("[opt][%s] 断句整理：%d → %d 行（合并 %d 组，兜底 %d 组）",
+                             task_id, merge_stat["before"], merge_stat["after"],
+                             merge_stat["merged"], merge_stat["fallback"])
+                except Exception as e:  # noqa: BLE001 — 双保险：整理失败保持原行集
+                    merge_stat = None
+                    log.warning("[opt][%s] 断句整理失败，保持原行集: %s", task_id, e)
+
             lines = [{"id": str(s["i"]), "text": str(s.get("text", ""))} for s in segments]
-            batches = [lines[k:k + BATCH_SIZE] for k in range(0, len(lines), BATCH_SIZE)] or [[]]
+            from slirn_home.revision_service import pack_batches
+            batches = pack_batches(lines, entry)
             found = _analyze_all()
             # 全部批次零发现时严格复检一轮 — 大模型抽样波动下可能漏掉整段，
             # 复检一轮显著降低「点了开始却什么都没提出来」的概率（仍零则视为确实干净）。
@@ -651,13 +999,14 @@ def start_job(
             data = {
                 "version": 1,
                 "video": Path(video_path).name,
-                "asr": {"model": "seaco-paraformer", "sd": False},
+                "asr": {"model": asr_source, "sd": False},
                 "model": (entry or {}).get("id") or "qwen-plus",
                 "provider": (entry or {}).get("provider", ""),
                 "protocol": (entry or {}).get("protocol", "openai"),
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "saved_at": None,
                 "hotwords": list(hotwords),
+                "merge": merge_stat,
                 "segments": segments,
                 "occurrences": occurrences,
                 "words": aggregate_words(occurrences),
