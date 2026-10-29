@@ -270,9 +270,16 @@ def _run_stage4_optimize_inner(
     state.highlights 统计按 index 合并（不清空其余条）。
 
     Args:
-        entry: llm_config 注册项；None 时用当前默认模型。
+        entry: llm_config 注册项；None 时解析「⚙ 大模型设置」的当前模型
+            （未注册模型才回落内置默认，与 _call_llm 口径一致）。
     """
     root = Path(repo_root)
+    # REQ-20261029-009：此前 entry=None 一路传到 _call_llm 会固定回落内置
+    # qwen-plus，无视用户切换的当前模型 —— 这里统一兜底解析，手动按钮与
+    # 自动流程两条调用路都由此覆盖。
+    if entry is None:
+        from slirn_home import llm_config
+        entry = llm_config.get_current_entry(root)
     project = svc.load_project(root, task_id, project_id)
 
     # REQ-20261017-149 老项目迁移：优化结果曾写回 highlights.json（Stage 3/4

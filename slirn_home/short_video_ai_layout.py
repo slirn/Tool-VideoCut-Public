@@ -187,9 +187,12 @@ def run_ai_layout(repo_root: Path | str, task_id: str, project_id: str,
     4. layout 写入 params.layout；识别结果写 params.ai_layout_result
     返回 {layout, result}。
     """
-    from slirn_home import revision_service
+    from slirn_home import llm_config, revision_service
 
     root = Path(repo_root)
+    # REQ-20261029-009：走「⚙ 大模型设置」的当前模型（此前不传 entry，
+    # _call_llm 会固定回落内置 qwen-plus，无视用户切换的模型）。
+    entry = llm_config.get_current_entry(root)
     bg, desc = str(bg_path or ""), str(bg_desc or "").strip()
     if not desc or not bg:
         s_bg, s_desc = _stored_desc(root, task_id, project_id)
@@ -204,11 +207,11 @@ def run_ai_layout(repo_root: Path | str, task_id: str, project_id: str,
     source = "llm"
     raw = ""
     try:
-        # ⚠️ 只传位置参数 —— 真实 _call_llm(system, user, entry, retries,
-        # max_tokens) 没有 timeout 形参；带错 kwarg 会 TypeError 被下方
-        # except 吞掉、静默回落默认布局（REQ-163 前真机从未调通 LLM）。
+        # ⚠️ 没有 timeout 形参；带错 kwarg 会 TypeError 被下方 except 吞掉、
+        # 静默回落默认布局（REQ-163 前真机从未调通 LLM）。entry 是关键字
+        # 形参，正常传（REQ-20261029-009）。
         raw = revision_service._call_llm(  # noqa: SLF001
-            system_prompt, user_prompt,
+            system_prompt, user_prompt, entry=entry,
         )
         data = json.loads(_strip_json(raw))
         if not isinstance(data, dict):
@@ -254,12 +257,14 @@ def parse_reference_layout(repo_root: Path | str, task_id: str, project_id: str,
     REQ-20261017-163：bg_desc = 用户写的背景图说明，直接进提示词 ——
     text 通道不真读图，说明是目前 LLM 理解背景图的唯一画面线索。
     """
-    from slirn_home import revision_service
+    from slirn_home import llm_config, revision_service
 
+    # REQ-20261029-009：与 run_ai_layout 同口径 —— 当前模型，不再固定内置默认
+    entry = llm_config.get_current_entry(Path(repo_root))
     system_prompt, user_prompt = _build_prompts(bg_path, bg_desc, style_hint)
     try:
         raw = revision_service._call_llm(  # noqa: SLF001
-            system_prompt, user_prompt,
+            system_prompt, user_prompt, entry=entry,
         )
         data = json.loads(_strip_json(raw))
         if not isinstance(data, dict):
