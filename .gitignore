@@ -28,6 +28,9 @@ downloads/
 .coverage
 .coverage.*
 
+# 云端测试报告与结果（内部 QA 产物，不入库不外传）
+docs/云端测试*
+
 # 测试与验证工具（内部 QA 用，不随公开仓库分发）
 tests/
 tools/
