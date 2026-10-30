@@ -165,7 +165,10 @@
     var stopAfter = (cfg && cfg.stop_after) || 'stage5_coarse';
     var since = (cfg && cfg.since) || 'stage2_extract';
 
-    panel.innerHTML = '<details class="slirn-pipe-panel-details" open>'
+    // REQ-20261030-011：流程配置面板默认**折叠**（对齐长视频 pipeline.js
+    // 的同款面板）—— 摘要条上的「运行模式 / 停止 / 保存配置 / 执行」按钮
+    // 始终可见（都在 summary 内），只有各阶段的表单默认收起。
+    panel.innerHTML = '<details class="slirn-pipe-panel-details">'
       + '<summary class="slirn-pipe-head">'
       + '<span class="slirn-pipe-title">⚙ 流程配置（自动执行）</span>'
       + '<span class="slirn-pipe-head-acts">'

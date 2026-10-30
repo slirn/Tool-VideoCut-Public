@@ -95,10 +95,22 @@
   function innerCtx() {
     var inner = document.getElementById('slirn-short-video-inner');
     if (!inner) return null;
-    return {
-      taskId: inner.getAttribute('data-task-id') || '',
-      projectId: inner.getAttribute('data-project-id') || ''
-    };
+    var taskId = inner.getAttribute('data-task-id') || '';
+    var projectId = inner.getAttribute('data-project-id') || '';
+    // REQ-20261030-013：没有项目上下文时返回 null（不是空 id 的 ctx）。
+    // 短视频列表页 / 列表态的 #slirn-short-video-inner 都没有 data-task-id，
+    // 此前返回 {taskId:'', projectId:''} → 各处 `if (!ctx) return` 拦不住，
+    // 于是带着空 id 去 POST 短视频端点 → 服务端回「缺少 task_id 或 project_id」。
+    if (!taskId || !projectId) return null;
+    return {taskId: taskId, projectId: projectId};
+  }
+
+  // REQ-20261030-013：短视频面板根（短视频项目编辑器 = #slirn-short-video-inner
+  // [data-task-id][data-project-id]）。长视频「精剪合成」工作台在同一页面
+  // （#slirn-tab-workbench），两边控件都带 data-key / .slirn-fine-enabled，
+  // 必须按面板隔离，否则短视频的 document 级监听会管到长视频的参数控件。
+  function svPanelRoot() {
+    return document.getElementById('slirn-short-video-inner');
   }
 
   // ---------- 列表 / 创建 / 打开 / 删除 ----------
@@ -242,6 +254,104 @@
     // REQ-20261013-116：用户主动点 tab → 记下当前阶段，openProject 重渲染后
     // 按此恢复（不依赖 server focus_key 自动算到「第一个未 done 的阶段」）。
     try { localStorage.setItem(SV_STAGE_KEY, stageKey); } catch (e) {}
+    // REQ-20261030-017：懒渲染 —— 该阶段还是占位壳就现拉（外网带宽下这是
+    // 唯一一次网络请求，点哪拉哪）。
+    svEnsureStageLoaded(stageKey);
+  }
+
+  // ---------- REQ-20261030-017：短视频阶段面板懒渲染 ----------
+  // 服务端 render_project 只内联焦点阶段，其余留 data-sv-lazy="1" 占位壳；
+  // 用户点阶段 → POST /slirn/api/sv_pane 只渲染那一个阶段 → 注入 + 按阶段补绑定。
+  var _svPaneBusy = {};
+
+  function _svPaneSection(stageKey) {
+    return document.querySelector(
+      '#slirn-short-video-inner .slirn-sv-stage-pane[data-stage-key="' + stageKey + '"]');
+  }
+
+  function _svPaneIsLazy(stageKey) {
+    var p = _svPaneSection(stageKey);
+    return !!p && p.getAttribute('data-sv-lazy') === '1';
+  }
+
+  function svEnsureStageLoaded(stageKey) {
+    if (!stageKey || !_svPaneIsLazy(stageKey)) return;
+    if (_svPaneBusy[stageKey]) return;          // 同阶段并发请求 → 丢弃
+    var ctx = innerCtx(); if (!ctx) return;
+    _svPaneBusy[stageKey] = 1;
+    var pane = _svPaneSection(stageKey);
+    var shell = pane ? pane.querySelector('[data-sv-lazy-shell]') : null;
+    if (shell) {
+      shell.innerHTML = '<span class="slirn-sv-pane-lazy-icon">⏳</span>'
+        + '<span class="slirn-sv-pane-lazy-text">正在加载…</span>';
+    }
+    postJSON(API + '/sv_pane', {
+      task_id: ctx.taskId, project_id: ctx.projectId, stage: stageKey
+    }).then(function(r) {
+      delete _svPaneBusy[stageKey];
+      // 期间可能整页重渲染过 → 重新按 key 找面板，找不到就丢弃这次结果
+      var p = _svPaneSection(stageKey);
+      if (!p) return;
+      if (!r || !r.ok) {
+        var sh = p.querySelector('[data-sv-lazy-shell]');
+        if (sh) {
+          sh.innerHTML = '<span class="slirn-sv-pane-lazy-icon">⚠️</span>'
+            + '<span class="slirn-sv-pane-lazy-text">加载失败</span>'
+            + '<button type="button" class="slirn-btn-mini" '
+            + 'data-action="sv-pane-reload" data-stage-key="' + stageKey + '">重试</button>';
+        }
+        return;
+      }
+      p.innerHTML = r.html || '';
+      p.removeAttribute('data-sv-lazy');
+      svPaneMount(stageKey, ctx.taskId, ctx.projectId);
+    });
+  }
+
+  function svPaneMount(stageKey, taskId, projectId) {
+    // 面板注入后的按阶段补绑定（与 openProject 的初始化序列对应；全部幂等）。
+    if (stageKey === 'stage3') initSubtitleSortAll();
+    if (stageKey === 'stage4') initStage4SortAll();
+    _restoreCollapsePrefs();
+    // hl 页签横跨 stage3/stage4 —— 任一面板加载后都要恢复记忆的选中项
+    var mem = window._slirnSvHlTab;
+    if (mem && mem.k === _svProjKey() && mem.hl) switchHlTab(mem.hl);
+    // 滚动锚点是一次性的：只有 stage4 真加载出来时才有意义（否则行不存在）
+    if (stageKey === 'stage4') _svStage4ApplyScrollAnchor(taskId, projectId);
+  }
+
+  // REQ-20261030-017：Stage 2 的 SRT 预览「加载更多」—— 整份 SRT 有 2900 行
+  // （800KB），首屏只带一页，剩余的点按钮续取并追加到同一个滚动容器。
+  function svSrtMore(btn) {
+    var ctx = innerCtx(); if (!ctx) return;
+    var offset = parseInt(btn.getAttribute('data-offset') || '0', 10) || 0;
+    var limit = parseInt(btn.getAttribute('data-limit') || '200', 10) || 200;
+    var box = btn.closest ? btn.closest('.slirn-stage2-srt-preview') : null;
+    if (!box) return;
+    var rows = box.querySelector('.slirn-stage2-srt-rows');
+    if (!rows) return;
+    btn.disabled = true;
+    btn.textContent = '加载中…';
+    postJSON(API + '/sv_srt_preview', {
+      task_id: ctx.taskId, project_id: ctx.projectId,
+      offset: offset, limit: limit
+    }).then(function(r) {
+      if (!r || !r.ok) {
+        btn.disabled = false;
+        btn.textContent = '加载失败，点击重试';
+        return;
+      }
+      // 旧「加载更多」按钮（含它所在的外层 .more 容器）要被新块替换掉
+      var oldMore = btn.parentNode;
+      rows.insertAdjacentHTML('beforeend', r.rows_html || '');
+      if (oldMore && oldMore.parentNode) oldMore.parentNode.removeChild(oldMore);
+      // 新块里可能又带一个「加载更多」按钮 —— 事件是委托的，无需再绑定
+      var meta = box.querySelector('.slirn-sub-meta');
+      if (meta && r.shown_to) {
+        meta.textContent = meta.textContent.replace(
+          /（已显示 \d+ 行）/, '（已显示 ' + r.shown_to + ' 行）');
+      }
+    });
   }
 
   // REQ-20261013-116：短视频同步长视频「完成后自动打开下一阶段界面」开关
@@ -350,35 +460,45 @@
         return;
       }
       startElapsedTicker();
-      initSubtitleSortAll();
-      initStage4SortAll(); // REQ-20261019-210：Stage 4 字幕行拖拽排序
-      // 修订九：restore/rerun/删除/拼接都走 openProject 重渲染 —— 渲染完
-      // 恢复用户上次选中的短视频页签（该条已删则回默认第一条）
-      _restoreHlTab(taskId, projectId);
-      // REQ-20261018-191：恢复 上传素材/背景图区域检测 折叠状态（最后
-      // 操作是收起 → 重渲染后仍收起）
-      _restoreCollapsePrefs();
-      // REQ-20261013-116：① 恢复「自动打开下一阶段」开关状态 ② 按开关决定是否
-      // 切下一阶段（只在「当前焦点阶段刚完成」时触发；只是首次进入或手动点
-      // tab 不会触发）。最后用用户记忆的 stage 覆盖 server focus_key 默认
-      // 焦点（避免 server 把焦点算到「第一个未 done 阶段」抢走用户当前页）。
-      applySvAutoNextState();
+      // REQ-20261013-116：按开关决定是否切下一阶段（只在「当前焦点阶段刚完成」
+      // 时触发；只是首次进入或手动点 tab 不会触发）。
       svAutoNextMaybe(prevDone, hadSv, prevActive);
-      var saved = _readSvStage();
-      if (saved) {
-        // 校验：saved 必须是 server 渲染出来的 6 个 stage 之一
-        var exists = document.querySelector(
-          '#slirn-short-video-inner .slirn-sv-stage-pane[data-stage-key="' + saved + '"]');
-        if (exists) switchSvStage(saved);
-      }
-      // REQ-20261019-222：Stage 4 行编辑保存后的滚动锚点恢复（放在页签/
-      // 焦点恢复之后 — display:none 的 pane 里 offsetTop 全是 0）
-      _svStage4ApplyScrollAnchor(taskId, projectId);
+      svRestoreAfterRender(taskId, projectId);
       // REQ-20261022-143：挂载「流程配置」面板（读配置 + 拉一次状态）
       if (window.slirnShortVideoFlowMount) {
         try { window.slirnShortVideoFlowMount(); } catch (e) {}
       }
     });
+  }
+
+  // 渲染完成后的公共恢复动作（openProject / 选源重渲染 共用）。
+  // REQ-20261030-017：懒渲染下要把用户所在阶段恢复出来并按需拉取该面板
+  // （switchSvStage 内部会触发占位壳的按需加载）。
+  function svRestoreAfterRender(taskId, projectId) {
+    initSubtitleSortAll();
+    initStage4SortAll(); // REQ-20261019-210：Stage 4 字幕行拖拽排序
+    // 修订九：restore/rerun/删除/拼接都走 openProject 重渲染 —— 渲染完
+    // 恢复用户上次选中的短视频页签（该条已删则回默认第一条）
+    _restoreHlTab(taskId, projectId);
+    // REQ-20261018-191：恢复 上传素材/背景图区域检测 折叠状态（最后
+    // 操作是收起 → 重渲染后仍收起）
+    _restoreCollapsePrefs();
+    // REQ-20261013-116：恢复「自动打开下一阶段」开关状态；最后用用户记忆的
+    // stage 覆盖 server focus_key 默认焦点（避免 server 把焦点算到「第一个
+    // 未 done 阶段」抢走用户当前页）。
+    applySvAutoNextState();
+    var saved = _readSvStage();
+    if (saved) {
+      // 校验：saved 必须是 server 渲染出来的 6 个 stage 之一
+      var exists = document.querySelector(
+        '#slirn-short-video-inner .slirn-sv-stage-pane[data-stage-key="' + saved + '"]');
+      if (exists) switchSvStage(saved);
+    }
+    // REQ-20261019-222：Stage 4 行编辑保存后的滚动锚点恢复（放在页签/
+    // 焦点恢复之后 — display:none 的 pane 里 offsetTop 全是 0）
+    // REQ-20261030-017：锚点是一次性的 —— stage4 还是占位壳时行还不存在，
+    // 此刻消费掉就丢了；改到 stage4 真加载时由 svPaneMount 消费。
+    if (!_svPaneIsLazy('stage4')) _svStage4ApplyScrollAnchor(taskId, projectId);
   }
 
   // ---------- 修订九：Stage 3 多条短视频逐条页签 ----------
@@ -416,8 +536,16 @@
     var tab = document.querySelector(
       '.slirn-stage3-hl-tab[data-hl-index="' + mem.hl + '"], ' +
       '.slirn-stage4-hl-tab[data-hl-index="' + mem.hl + '"]');
-    if (tab) switchHlTab(mem.hl);
-    else window._slirnSvHlTab = null;   // 该条已删除 → 回默认第一条
+    if (tab) { switchHlTab(mem.hl); return; }
+    // REQ-20261030-017：懒渲染下 stage3/stage4 可能都还是占位壳（页签 DOM
+    // 还没渲染出来）→ 此时不能判定「该条已删除」，保留记忆，等面板加载时
+    // 由 svPaneMount 恢复。
+    if (!_svAnyHlTabInDom()) return;
+    window._slirnSvHlTab = null;   // 该条已删除 → 回默认第一条
+  }
+
+  function _svAnyHlTabInDom() {
+    return !!document.querySelector('.slirn-stage3-hl-tab, .slirn-stage4-hl-tab');
   }
 
   // ---------- REQ-20261018-191：折叠状态记忆（上传素材 / 背景图区域检测） ----------
@@ -509,7 +637,11 @@
     }).then(function(r) {
       if (r && r.ok) {
         toast('已选源');
-        if (r.html) setHTML(r.html);
+        if (r.html) {
+          setHTML(r.html);
+          // REQ-20261030-017：重渲染后同样要恢复用户所在阶段（占位壳按需拉）
+          svRestoreAfterRender(ctx.taskId, ctx.projectId);
+        }
         else openProject(ctx.taskId, ctx.projectId);
       } else toast((r && r.error) || '选源失败', 'error');
     });
@@ -2510,14 +2642,22 @@
       materials: {}, font: {}, output: {}, audio: {}, preview: {}, layout: {},
       mentor: {}, title: {}, cover_title: {},
     };
+    // REQ-20261030-013：只收集**短视频面板内**的元素 ——
+    // 长视频「精剪合成」面板与短视频面板在同一页面，它的滑块也带
+    // data-key / .slirn-fine-enabled；document 级收集会把长视频的几何
+    // 参数写进短视频 params（长/短视频参数必须分开）。
+    var panel = svPanelRoot();
+    if (!panel) return params;
+    var qa = function(sel) { return panel.querySelectorAll(sel); };
+    var q1 = function(sel) { return panel.querySelector(sel); };
     // materials（公共 4 槽：cover/bg/audio/avatar；
     // REQ-20261017-163 reference 移除；REQ-20261017-164 avatar 加入）
-    document.querySelectorAll('.slirn-sv-mat-input').forEach(function(inp) {
+    qa('.slirn-sv-mat-input').forEach(function(inp) {
       var slot = inp.getAttribute('data-mat-slot');
       if (slot) params.materials[slot] = inp.value || '';
     });
     // REQ-20261017-163：背景图说明（textarea → materials.bg_desc）
-    document.querySelectorAll('.slirn-sv-mat-desc').forEach(function(ta) {
+    qa('.slirn-sv-mat-desc').forEach(function(ta) {
       var slot = ta.getAttribute('data-desc-slot');
       if (slot) params.materials[slot + '_desc'] = ta.value || '';
     });
@@ -2527,7 +2667,7 @@
                            'nickname_outline_width', 'title_outline_width',
                            'title_line_spacing'];
     var MENTOR_BOOL_KEYS = ['nickname_outline_enabled', 'title_outline_enabled'];
-    document.querySelectorAll('[data-mentor-key]').forEach(function(inp) {
+    qa('[data-mentor-key]').forEach(function(inp) {
       var key = inp.getAttribute('data-mentor-key');
       if (!key) return;
       if (MENTOR_BOOL_KEYS.indexOf(key) >= 0) {
@@ -2541,7 +2681,7 @@
     // REQ-20261018-177：视频标题（文字+字体+颜色+大小+阴影）；
     // 标题区域 X/Y/W/H 走下面 [data-key] 通用口径进 params.layout.title
     var TITLE_NUM_KEYS = ['size', 'shadow_opacity', 'shadow_depth', 'line_spacing'];
-    document.querySelectorAll('[data-title-key]').forEach(function(inp) {
+    qa('[data-title-key]').forEach(function(inp) {
       var key = inp.getAttribute('data-title-key');
       if (!key) return;
       if (key === 'bold') {
@@ -2556,7 +2696,7 @@
     // 与视频标题独立）；封面标题区域 X/Y/W/H + enabled 走 [data-key] /
     // .slirn-fine-enabled 通用口径进 params.layout.cover_title
     var CT_NUM_KEYS = ['size', 'shadow_opacity', 'shadow_depth', 'line_spacing'];
-    document.querySelectorAll('[data-ct-key]').forEach(function(inp) {
+    qa('[data-ct-key]').forEach(function(inp) {
       var key = inp.getAttribute('data-ct-key');
       if (!key) return;
       if (key === 'bold') {
@@ -2569,7 +2709,7 @@
     });
     // font：data-font-key（sel/num/chk/color/slider 全在此口径下）
     var FONT_NUM_KEYS = ['size', 'stroke_width', 'bg_opacity', 'bg_radius', 'offset_ms'];
-    document.querySelectorAll('[data-font-key]').forEach(function(inp) {
+    qa('[data-font-key]').forEach(function(inp) {
       var key = inp.getAttribute('data-font-key');
       if (!key) return;
       if (key === 'bold' || key === 'bg_enabled') {
@@ -2583,7 +2723,7 @@
     // data-key（画布 X/Y/W/H + cover.duration + audio.*）：
     // video.x/subtitle.x/bg.x → layout 组；cover.duration → layout.cover；
     // audio.volume_db/fade_in_sec/fade_out_sec → audio 组（秒→毫秒）
-    document.querySelectorAll('[data-key]').forEach(function(inp) {
+    qa('[data-key]').forEach(function(inp) {
       var key = inp.getAttribute('data-key');
       if (!key || key.indexOf('.') < 0) return;
       var head = key.split('.')[0], tail = key.split('.').slice(1).join('.');
@@ -2610,11 +2750,12 @@
         else grp[tail] = v;
       }
     });
-    // REQ-20261018-189：视频适配方式选择器已移除 —— 视频区域固定语义
-    // 「截取的视频自动适应区域宽高」，不再收集适配键
+    // REQ-20261029-010：视频「适配方式」复选框（data-key="video.video_fit"）
+    // 走上面 [data-key] 通用口径的 checkbox 分支 → params.layout.video.video_fit
+    // （True=铺满区域 / False=按比例等比显示）
     // REQ-20261018-173：启用复选框（data-key="video" 等无点号键，上面的
     // [data-key] 数值循环 parseFloat 选不中 → 此前保存根本不落盘）
-    document.querySelectorAll('.slirn-fine-enabled[data-key]').forEach(function(chk) {
+    qa('.slirn-fine-enabled[data-key]').forEach(function(chk) {
       var key = chk.getAttribute('data-key');
       if (!key) return;
       var grp = params.layout[key];
@@ -2622,16 +2763,16 @@
       grp.enabled = !!chk.checked;
     });
     // REQ-20261018-173：导师头像形状（circle / rect）
-    var sh = document.querySelector('.slirn-sv-avatar-shape');
+    var sh = q1('.slirn-sv-avatar-shape');
     if (sh) params.layout.avatar_shape = sh.value || 'circle';
     // output
-    var res = document.querySelector('.slirn-sv-output-resolution');
+    var res = q1('.slirn-sv-output-resolution');
     if (res) params.output.resolution = res.value || '720p';
     // audio.enabled
-    var ae = document.querySelector('.slirn-sv-audio-enabled');
+    var ae = q1('.slirn-sv-audio-enabled');
     if (ae) params.audio.enabled = !!ae.checked;
     // preview：每条处理区各有一个时长输入，取第一个作默认
-    var pd = document.querySelector('.slirn-sv-preview-duration');
+    var pd = q1('.slirn-sv-preview-duration');
     if (pd) params.preview.duration_sec = parseInt(pd.value, 10) || 5;
     return params;
   }
@@ -2663,6 +2804,8 @@
       clearTimeout(_svParamsAutosaveTimer);
       _svParamsAutosaveTimer = null;
     }
+    // REQ-20261030-013：没有项目上下文（短视频列表态 / 长视频工作台）
+    // → innerCtx() 返回 null → 直接返回，绝不带空 id 去 POST。
     var ctx = innerCtx(); if (!ctx) return;
     postJSON(API + '/short_video_stage7_save_params', {
       task_id: ctx.taskId, project_id: ctx.projectId,
@@ -2685,6 +2828,11 @@
   }
   function _isStage7ParamTarget(el) {
     if (!el || el.type === 'file' || !el.classList) return false;
+    // REQ-20261030-013：只处理**短视频面板内**的控件 —— 长视频「精剪
+    // 合成」工作台的滑块 / 勾选框也带 data-key、.slirn-fine-enabled，
+    // 此前被这里的 document 级监听捕获 → 触发短视频的自动保存
+    // （ids 为空时报「缺少 task_id 或 project_id」）。
+    if (!el.closest || !el.closest('#slirn-short-video-inner')) return false;
     if (el.classList.contains('slirn-sv-mat-desc')) return false;  // REQ-165 专用通道
     return el.classList.contains('slirn-sv-mat-input') ||
            el.hasAttribute('data-mentor-key') ||
@@ -3265,7 +3413,8 @@
     }).then(function(r) {
       btn.disabled = false;
       if (!r || !r.ok) return toast('❌ ' + (r && r.error ? r.error : 'AI 布局失败'), 'error');
-      toast(r.toast || '🤖 AI 布局已应用');
+      // REQ-20261030-012：分析只出结果，不写参数区（默认文案别写「已应用」）
+      toast(r.toast || '🤖 AI 识别完成（结果未写入参数区，点「✅ 填充到参数区域」应用）');
       openProject(ctx.taskId, ctx.projectId);
     });
   }
@@ -3996,6 +4145,14 @@
     if (action === 'sv-stage-nav') {
       return switchSvStage(btn.getAttribute('data-stage-key') || '');
     }
+    // REQ-20261030-017：懒面板占位壳上的「加载/重试」按钮
+    if (action === 'sv-pane-reload') {
+      var rk = btn.getAttribute('data-stage-key') || '';
+      if (rk) { switchSvStage(rk); svEnsureStageLoaded(rk); }
+      return;
+    }
+    // REQ-20261030-017：Stage 2 的 SRT 预览「加载更多」
+    if (action === 'sv-srt-more') { return svSrtMore(btn); }
     // REQ-20261022-144：执行日志
     if (action === 'sv-logs-open') { return svOpenLogs(); }
     if (action === 'sv-logs-refresh') { svLogsState.page = 1; return svLoadLogs(); }

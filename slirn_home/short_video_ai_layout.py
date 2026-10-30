@@ -7,6 +7,10 @@ v2 流程（用户语义）：
 3. 调 LLM 识别说明里点名的区域（regions 列表 + 映射到 4 个标准槽位 layout）
 4. 识别结果落 ``params.ai_layout_result``（regions / layout / 生成提示词 /
    时间），前端在检测区下方渲染结果卡
+5. **不写入 params.layout** —— 分析只出结果；要落到参数区必须用户点
+   「✅ 填充到参数区域」（``short_video_bg_detect.apply_detected_to_layout``，
+   它读的就是 ``ai_layout_result``）。此前分析完自动 apply，会把用户
+   已有的区域参数整个替换掉。
 
 v1 简化保留：
 - 不引入多模态 LLM SDK；调 ``revision_service._call_llm`` 走 text 通道
@@ -184,8 +188,11 @@ def run_ai_layout(repo_root: Path | str, task_id: str, project_id: str,
     1. 说明/背景图未显式传时读已存 params（「首先要读取背景区检测说明」）
     2. 说明为空 → 报错（说明是识别指令的来源，没有它无从识别）
     3. LLM 失败/解析失败 → fallback 默认布局，result.source = "fallback"
-    4. layout 写入 params.layout；识别结果写 params.ai_layout_result
-    返回 {layout, result}。
+    4. 识别结果写 params.ai_layout_result（供展示 + 「✅ 填充到参数区域」用）
+    5. **不写 params.layout**（REQ-20261030-012）：分析不再自动覆盖用户已有
+       的区域参数；参数区只有点「✅ 填充到参数区域」才写入
+       （short_video_bg_detect.apply_detected_to_layout 读 ai_layout_result）
+    返回 {layout, result}（layout = 本次识别出的 4 区域布局，仅供调用方参考）。
     """
     from slirn_home import llm_config, revision_service
 
@@ -222,7 +229,9 @@ def run_ai_layout(repo_root: Path | str, task_id: str, project_id: str,
         layout, regions = _default_layout(), []
         source = "fallback"
 
-    apply_ai_layout(root, task_id, project_id, layout)
+    # REQ-20261030-012：**不再** apply_ai_layout —— 分析只出结果，不动
+    # params.layout（自动 apply 会把用户已有的区域参数整个替换掉）。
+    # 落 params.ai_layout_result：结果卡展示 + 「✅ 填充到参数区域」的数据源。
     result: dict[str, Any] = {
         "regions": regions,
         "layout": layout,
@@ -230,6 +239,10 @@ def run_ai_layout(repo_root: Path | str, task_id: str, project_id: str,
         "desc": desc[:800],
         "source": source,
         "detected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # REQ-20261030-012：本次分析的唯一 id —— 「填充到参数区域」时记
+        # applied_result_id，结果卡据此判断「这份结果还没写入参数区」
+        # （同一秒内重复分析也能区分）。
+        "result_id": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
     }
     _persist_ai_result(root, task_id, project_id, result)
     return {"layout": layout, "result": result}
@@ -278,7 +291,13 @@ def parse_reference_layout(repo_root: Path | str, task_id: str, project_id: str,
 
 def apply_ai_layout(repo_root: Path | str, task_id: str, project_id: str,
                     layout: dict) -> dict:
-    """把 LLM 解析的 layout 写入 params.layout。"""
+    """把 LLM 解析的 layout 写入 params.layout（**直接套用四区域布局**）。
+
+    ⚠️ REQ-20261030-012：分析流程（run_ai_layout）**不再**调用本函数 ——
+    分析只出结果落 ai_layout_result；要写进参数区走
+    ``short_video_bg_detect.apply_detected_to_layout``（用户点
+    「✅ 填充到参数区域」时触发，按区域类型映射 + 像素检测兜底）。
+    """
     root = Path(repo_root)
     project = svc.load_project(root, task_id, project_id)
     from slirn_home import short_video_fine as _fine

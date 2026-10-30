@@ -25,7 +25,6 @@
 
 from __future__ import annotations
 
-import copy
 import logging
 import os
 import re
@@ -611,6 +610,10 @@ class ComposeSpec:
     # 源设计空间，REQ-20261018-174）——渲染时按比例换算成 iw/ih 表达式
     video_rect: dict = field(default_factory=lambda: {"x": 60, "y": 240, "w": 960, "h": 1080})
     video_crop: dict = field(default_factory=lambda: {"x": 0, "y": 0, "w": SRC_DESIGN_W, "h": SRC_DESIGN_H})
+    # REQ-20261029-010：适配方式（params.layout.video.video_fit）——
+    # True = 截取的视频拉伸铺满视频区域（原固定语义）；False = 宽度优先，
+    # 宽度适配到区域宽、高度按截取视频宽高比自动算出（居中，不补背景）
+    video_fit: bool = True
     bgm_path: Path | None = None
     volume_db: float = -6.0
     fade_in: float = 0.5
@@ -716,28 +719,55 @@ def build_compose_command(spec: ComposeSpec, output_path: Path,
         vsrc = "[cutv]"
     vc = spec.video_crop
     video_rect = _clamp_rect(spec.video_rect)
-    # REQ-20261018-189：视频区域语义 =「截取的视频自动适应区域的宽度和高度」
-    # —— 直接铺满区域矩形（适配方式选择已移除，不再按源宽高比 contain 居中）
-    # REQ-20261018-207：自动适配宽高 —— 用户裁剪矩形先取下，再按「区域映射
-    # 到**输出帧**后的屏幕宽高比」中心 cover 二次裁剪（表达式内联 iw/ih，
-    # 源分辨率无关；3:4 输出下区域屏幕比 = 设计比×kx/ky），最后铺满区域。
-    # 屏上视频永不变形、永不出杆；裁剪比已等于屏幕比（9:16 族 + REQ-198
-    # 区域锁）时二次裁剪恒等（min 两侧相等）
     vx, vy = int(video_rect["x"]), int(video_rect["y"])
     vw, vh = int(video_rect["w"]), int(video_rect["h"])
     _kxv = (spec.out_w / DESIGN_W) or 1.0
     _kyv = (spec.out_h / DESIGN_H) or 1.0
-    r_out = (vw * _kxv) / (vh * _kyv)
-    _rs = f"{r_out:.6f}"
-    chain.append(
-        f"{vsrc}crop=iw*{int(vc['w'])}/{SRC_DESIGN_W}:ih*{int(vc['h'])}/{SRC_DESIGN_H}:"
-        f"iw*{int(vc['x'])}/{SRC_DESIGN_W}:ih*{int(vc['y'])}/{SRC_DESIGN_H},"
-        f"crop=w='min(iw\\,ih*{_rs})':h='min(ih\\,iw/{_rs})':"
-        f"x='(iw-ow)/2':y='(ih-oh)/2',"
-        f"scale=vwPLACE:vhPLACE:flags=lanczos,setsar=1[vfit]"
+    _crop_expr = (
+        f"crop=iw*{int(vc['w'])}/{SRC_DESIGN_W}:ih*{int(vc['h'])}/{SRC_DESIGN_H}:"
+        f"iw*{int(vc['x'])}/{SRC_DESIGN_W}:ih*{int(vc['y'])}/{SRC_DESIGN_H}"
     )
-    chain[-1] = chain[-1].replace("vwPLACE", str(vw)).replace("vhPLACE", str(vh))
-    chain.append(f"{cur}[vfit]overlay=x={vx}:y={vy}[v1]")
+    if spec.video_fit:
+        # REQ-20261018-189/207：铺满视频区域（适配方式=勾选）—— 先按用户
+        # 裁剪矩形取下，再按「区域映射到**输出帧**后的屏幕宽高比」中心
+        # cover 二次裁剪（表达式内联 iw/ih，源分辨率无关；3:4 输出下区域
+        # 屏幕比 = 设计比×kx/ky），最后铺满区域。屏上视频永不变形、永不
+        # 出杆；裁剪比已等于屏幕比（9:16 族 + REQ-198 区域锁）时二次裁剪
+        # 恒等（min 两侧相等）
+        r_out = (vw * _kxv) / (vh * _kyv)
+        _rs = f"{r_out:.6f}"
+        chain.append(
+            f"{vsrc}{_crop_expr},"
+            f"crop=w='min(iw\\,ih*{_rs})':h='min(ih\\,iw/{_rs})':"
+            f"x='(iw-ow)/2':y='(ih-oh)/2',"
+            f"scale={vw}:{vh}:flags=lanczos,setsar=1[vfit]"
+        )
+        chain.append(f"{cur}[vfit]overlay=x={vx}:y={vy}[v1]")
+    else:
+        # REQ-20261029-010：按比例显示（适配方式=不勾选）—— **宽度优先**：
+        # 先把截取视频的宽度适配到视频区域的宽度（宽度恒等于区域宽，不再
+        # 因区域高度不够而把视频等比缩小塞进区域、也不做 contain 留边），
+        # 高度由截取视频的宽高比自动算出（宽高比决定高度，不拉伸不变形）。
+        # 若算出的高度大于区域高度，视频在区域内居中、上下溢出区域（不
+        # 用背景去补框）。
+        # R = 裁剪后内容的源宽高比 × (ky/kx)：末尾设计画布按
+        # kx/ky 各向异性拉到输出帧（3:4 等异比例输出），乘 ky/kx 预补偿
+        # 后屏上内容仍不变形。宽/高各自独立求值（都用 iw/ih + 常量，
+        # 不引用对方输出），截断到偶数（yuv420p 要求）。
+        # ⚠️ R 整体必须带括号：ffmpeg 表达式里 / 与 * 同优先级左结合，
+        # 写成 1080/(iw/ih)*0.75 会被算成 (1080/(iw/ih))*0.75（实测高度
+        # 455 而非 810，内容被横向压扁）
+        _R = f"((iw/ih)*{(_kyv / _kxv):.6f})"
+        _wexpr = f"max(2\\,trunc({vw}/2)*2)"
+        _hexpr = f"max(2\\,trunc({vw}/{_R}/2)*2)"
+        chain.append(
+            f"{vsrc}{_crop_expr},"
+            f"scale=w='{_wexpr}':h='{_hexpr}':flags=lanczos,setsar=1[vfit]"
+        )
+        chain.append(
+            f"{cur}[vfit]overlay=x='{vx}+({vw}-overlay_w)/2':"
+            f"y='{vy}+({vh}-overlay_h)/2'[v1]"
+        )
     cur = "[v1]"
 
     # ---- L3 导师头像（circle → geq 圆形 alpha 掩码）----
@@ -1123,6 +1153,8 @@ def resolve_compose_spec(root: Path, project: dict, index: int, *,
         "h": max(1, int((layout.get("video") or {}).get("crop_h") or SRC_DESIGN_H)),
     }
     spec.video_rect = _rect(layout, "video")
+    # REQ-20261029-010：适配方式（缺省=勾选=铺满区域，与历史行为一致）
+    spec.video_fit = bool((layout.get("video") or {}).get("video_fit", True))
 
     # 字幕事件映射。REQ-20261018-184：字幕区域未勾选 → 只跳过**烧录**
     # （ass_events 不加），导出的精剪切分（segments）仍按字幕时间轴算——
@@ -1163,8 +1195,10 @@ def compose_preview_one(repo_root: Path | str, task_id: str, project_id: str,
 
     REQ-20261018-176 用户口径：先按背景图说明检测各区域，再混编 ——
     ensure_layout_detected 在这里先行（cached/cooldown 逻辑防拖慢）。
+    REQ-20261030-012：检测只刷新识别结果，**不写参数区**；混编一律按
+    参数区当前值渲染（pending_fill=True = 有更新的识别结果还没填充）。
     """
-    ensure_layout_detected(repo_root, task_id, project_id)
+    det = ensure_layout_detected(repo_root, task_id, project_id)
     root = Path(repo_root)
     project = svc.load_project(root, task_id, project_id)
     spec = resolve_compose_spec(root, project, int(index), preview=True,
@@ -1175,7 +1209,8 @@ def compose_preview_one(repo_root: Path | str, task_id: str, project_id: str,
     dur = _atomic_render(spec, out, svc.stage6_dir(root, task_id, project_id) / "_work")
     return {"preview_path": str(out), "size": out.stat().st_size,
             "duration_sec": round(dur or float(duration_sec), 1),
-            "index": int(index)}
+            "index": int(index),
+            "pending_fill": bool(det.get("pending_fill"))}
 
 
 def export_cover_image_one(repo_root: Path | str, task_id: str, project_id: str,
@@ -1352,60 +1387,93 @@ def _parse_dt(raw: str) -> float | None:
         return None
 
 
+def _pending_fill(ai_res: dict, layout: dict | None = None) -> bool:
+    """识别结果是否**还没**写入参数区（fill 时会记 applied_detected_at）。
+
+    只有 LLM 识别结果算数 —— fallback 是默认布局，没有「更新的识别」可填。
+    """
+    from slirn_home import short_video_bg_detect as bg_detect
+
+    if not isinstance(ai_res, dict) or not ai_res:
+        return False
+    if str(ai_res.get("source") or "") != "llm":
+        return False
+    return not bg_detect.is_result_applied(ai_res, layout)
+
+
+def layout_fill_pending(repo_root: Path | str, task_id: str,
+                        project_id: str) -> bool:
+    """只读检查：参数区是否落后于识别结果（不调 LLM、不写任何东西）。
+
+    用于导出启动前给用户一句提醒 —— 识别结果还没填进参数区时，渲染按
+    参数区当前值走。说明改了（结果过期，渲染前会重跑分析）也算「待填充」。
+    """
+    root = Path(repo_root)
+    from slirn_home import short_video_bg_detect as bg_detect
+    from slirn_home import short_video_fine as fine
+
+    project = svc.load_project(root, task_id, project_id)
+    params = fine._get_params(project)
+    res = params.get("ai_layout_result") or {}
+    if not isinstance(res, dict) or not res:
+        return False
+    if str(res.get("source") or "") != "llm":
+        return False
+    desc = str((params.get("materials") or {}).get("bg_desc") or "").strip()
+    if str(res.get("desc") or "") != desc[:800]:
+        return True  # 说明改了 → 结果过期，渲染前重跑分析（仍不写参数区）
+    return not bg_detect.is_result_applied(res, params.get("layout") or {})
+
+
 def ensure_layout_detected(repo_root: Path | str, task_id: str,
                            project_id: str) -> dict:
-    """渲染前确保区域参数新鲜：
+    """渲染前确保**识别结果**新鲜（REQ-20261030-012：只刷新分析，不写参数区）。
 
     - bg_desc 为空 → 不检测（no_desc）
     - ai_layout_result.desc == 当前 desc 且 source==llm → 缓存命中（cached）
     - fallback 结果在 10 分钟冷却期内 → 不重试（cooldown）
-    - 需要跑 → run_ai_layout；source==llm 才 apply_detected_to_layout
-      （fallback 不覆盖手动参数：先快照 layout，失败后恢复落盘）
+    - 需要跑 → run_ai_layout → **只**更新 params.ai_layout_result（结果卡）
+
+    ⚠️ 本函数**绝不写 params.layout**：参数区只由用户点「✅ 填充到参数区域」
+    （short_video_bg_detect.apply_detected_to_layout）写入。此前这里在
+    source==llm 时自动 apply —— 渲染会顺手改掉用户已有的区域参数，且
+    「分析参数」不写、「渲染」却写，两个入口行为不一致，用户每次都迷惑。
+
+    渲染一律按参数区当前值走（所见即所得）；返回 pending_fill=True 表示
+    有比参数区更新的识别结果还没填充（提示用户去点填充）。
     """
     root = Path(repo_root)
     from slirn_home import short_video_ai_layout as ai_layout
-    from slirn_home import short_video_bg_detect as bg_detect
     from slirn_home import short_video_fine as fine
 
     project = svc.load_project(root, task_id, project_id)
     params = fine._get_params(project)
     desc = str((params.get("materials") or {}).get("bg_desc") or "").strip()
     if not desc:
-        return {"ran": False, "reason": "no_desc"}
+        return {"ran": False, "reason": "no_desc", "pending_fill": False}
 
     cached = params.get("ai_layout_result") or {}
-    if isinstance(cached, dict) and str(cached.get("desc") or "") == desc:
+    cur_layout = params.get("layout") or {}
+    # ⚠️ ai_layout_result.desc 落盘时截断到 800 字（run_ai_layout）→ 比较
+    # 也要用同样的截断，否则长说明永远命中不了缓存（每次渲染都重跑 LLM）
+    if isinstance(cached, dict) and str(cached.get("desc") or "") == desc[:800]:
         if cached.get("source") == "llm":
             return {"ran": False, "reason": "cached", "source": "llm",
-                    "regions": len(cached.get("regions") or [])}
+                    "regions": len(cached.get("regions") or []),
+                    "pending_fill": _pending_fill(cached, cur_layout)}
         ts = _parse_dt(cached.get("detected_at") or "")
         if ts is not None and time.time() - ts < _DETECT_RETRY_COOLDOWN_SEC:
-            return {"ran": False, "reason": "cooldown", "source": "fallback"}
+            return {"ran": False, "reason": "cooldown", "source": "fallback",
+                    "pending_fill": _pending_fill(cached, cur_layout)}
 
-    snapshot = copy.deepcopy(params.get("layout") or {})
     try:
         out = ai_layout.run_ai_layout(root, task_id, project_id)
     except Exception as e:  # noqa: BLE001 — 检测失败不阻断渲染
         return {"ran": True, "source": "error", "reason": "stale",
-                "error": str(e)[:200], "regions": 0}
+                "error": str(e)[:200], "regions": 0, "pending_fill": False}
     result = out.get("result") if isinstance(out, dict) else None
     source = str((result or {}).get("source") or "")
     regions = len((result or {}).get("regions") or [])
-    if source == "llm":
-        try:
-            bg_detect.apply_detected_to_layout(root, task_id, project_id)
-        except Exception as e:  # noqa: BLE001 — 填充失败仅记错误
-            return {"ran": True, "source": source, "reason": "stale",
-                    "regions": regions, "apply_error": str(e)[:200]}
-        return {"ran": True, "source": source, "reason": "stale",
-                "regions": regions}
-    # fallback：恢复手动 layout（run_ai_layout 内部 apply_ai_layout 已写默认布局）
-    project = svc.load_project(root, task_id, project_id)
-    s = svc.get_stage_state(project, "stage6_fine")
-    p = fine._get_params(project)
-    p["layout"] = snapshot
-    s["params"] = p
-    svc.set_stage_state(project, "stage6_fine", s)
-    svc.save_project(root, project)
     return {"ran": True, "source": source or "fallback", "reason": "stale",
-            "regions": regions}
+            "regions": regions,
+            "pending_fill": _pending_fill(result or {}, cur_layout)}

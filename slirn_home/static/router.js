@@ -1526,26 +1526,7 @@
         // 流程配置面板挂载（REQ-20260918-047 v2）：工作台内常驻纵向面板
         // 面板若已存在（同 tid + 有 innerHTML）→ 不重新加载，状态保留
         if (window.slirnPipelineMount) window.slirnPipelineMount(tid);
-        // 2026-10-28：合成进行中刷新页面 → 进度显示消失（轮询闭包随页面销毁）。
-        // 工作台（重新）加载后查一次合成状态：running 则把按钮/状态行接回轮询，
-        // 与点「合成」按钮同一条路径（服务端对在跑任务只回 job，不会重复起）。
-        var _rcResumeBtn = document.getElementById('slirn-rc-compose');
-        if (_rcResumeBtn && tid) {
-          postJSON(SLIRN_API + '/compose_rough_status', {task_id: tid}).then(function(s) {
-            if (!s || !s.ok || !s.job) return;
-            var j = s.job;
-            if (j.state !== 'running') return;
-            var pct = Math.max(1, Math.min(99, Math.round(j.progress || 0)));
-            _rcResumeBtn.textContent = '🎬 合成中… ' + pct + '%';
-            _rcResumeBtn.disabled = true;
-            var _st = document.getElementById('slirn-rc-status');
-            if (_st) {
-              _st.style.display = '';
-              _st.textContent = '⏳ 合成进行中 ' + pct + '%（页面刷新后自动接续）— 完成后此处自动显示预览';
-            }
-            rcWatchJob(tid, _rcResumeBtn);
-          });
-        }
+        rcResumeComposeIfNeeded(tid);
       } else if (r && r.error) {
         toast('❌ ' + r.error, 'error');
       }
@@ -1720,6 +1701,12 @@
     document.querySelectorAll('.slirn-wb-pane').forEach(function(p) {
       p.style.display = (p.id === 'slirn-wb-pane-' + paneKey) ? '' : 'none';
     });
+    // REQ-20261030-016 懒渲染：重面板进入工作台时只是占位壳，切到时按需拉取
+    var _lz = document.getElementById('slirn-wb-pane-' + paneKey);
+    if (_lz && _lz.hasAttribute('data-lazy-pane')) {
+      wbLoadLazyPane(paneKey, _lz);
+      return;  // 注入完成时 wbPaneMount 内补跑本面板的收尾（含 revFilterSync）
+    }
     // 面板显隐切换后过滤计数才可见：重算 chips/可见性（工作台初始打开时
     // 修订面板可能隐藏，revRows 取不到行 → 计数 0；REQ-20260916-010）
     revFilterSync();
@@ -1728,6 +1715,104 @@
       loadLogs();
       logsState._loaded = true;
     }
+  }
+
+  // ===== REQ-20261030-016：懒面板按需拉取 + 注入后的分面板挂载 =====
+  var _wbPaneBusy = {};
+
+  // 2026-10-28：合成进行中刷新页面 → 进度显示消失（轮询闭包随页面销毁）。
+  // 工作台（重新）加载 / 懒加载粗剪合成面板后查一次合成状态：running 则把
+  // 按钮/状态行接回轮询（与点「合成」按钮同一条路径，服务端只回 job 不重起）。
+  function rcResumeComposeIfNeeded(tid) {
+    var btn = document.getElementById('slirn-rc-compose');
+    if (!btn || !tid) return;
+    postJSON(SLIRN_API + '/compose_rough_status', {task_id: tid}).then(function(s) {
+      if (!s || !s.ok || !s.job) return;
+      var j = s.job;
+      if (j.state !== 'running') return;
+      var pct = Math.max(1, Math.min(99, Math.round(j.progress || 0)));
+      btn.textContent = '🎬 合成中… ' + pct + '%';
+      btn.disabled = true;
+      var _st = document.getElementById('slirn-rc-status');
+      if (_st) {
+        _st.style.display = '';
+        _st.textContent = '⏳ 合成进行中 ' + pct + '%（页面刷新后自动接续）— 完成后此处自动显示预览';
+      }
+      rcWatchJob(tid, btn);
+    });
+  }
+
+  function wbLoadLazyPane(paneKey, paneEl) {
+    if (_wbPaneBusy[paneKey]) return;
+    _wbPaneBusy[paneKey] = true;
+    var inner = document.getElementById('slirn-tab-workbench-inner');
+    var tid = inner ? (inner.getAttribute('data-task-id') || '') : '';
+    paneEl.innerHTML = ('<div class="slirn-wb-pane-lazy"><div class="slirn-empty-icon">⏳</div>'
+      + '<div class="slirn-empty-text">正在加载面板内容…</div></div>');
+    postJSON(SLIRN_API + '/wb_pane', { task_id: tid, pane: paneKey }).then(function(r) {
+      if (r && r.ok && typeof r.html === 'string') {
+        paneEl.innerHTML = r.html;
+        paneEl.removeAttribute('data-lazy-pane');
+        wbPaneMount(paneKey, tid);
+      } else {
+        _wbPaneBusy[paneKey] = false;  // 允许重试
+        paneEl.innerHTML = ('<div class="slirn-wb-pane-lazy"><div class="slirn-empty-icon">⚠️</div>'
+          + '<div class="slirn-empty-text">面板加载失败' + (r && r.error ? '：' + r.error : '')
+          + ' — 再点一次左侧阶段重试</div></div>');
+      }
+    }, function() {
+      _wbPaneBusy[paneKey] = false;
+      paneEl.innerHTML = ('<div class="slirn-wb-pane-lazy"><div class="slirn-empty-icon">⚠️</div>'
+        + '<div class="slirn-empty-text">网络错误 — 再点一次左侧阶段重试</div></div>');
+    });
+  }
+
+  // 懒面板注入（或 focus 面板首渲）后的绑定收尾：openWorkbench 对整份 HTML
+  // 跑的序列里，属于单个面板的那部分在这里按 key 精确补跑（幂等，元素不在
+  // 即 no-op —— 与全量序列共用同一批函数）。
+  function wbPaneMount(paneKey, tid) {
+    try {
+      if (paneKey === 'subtitle') {
+        bindSubPlayer();
+      } else if (paneKey === 'subtitle_review') {
+        bindRevPlayer();
+        applyRevRigorState();
+        revFilterSync();
+      } else if (paneKey === 'rough_cut') {
+        // 重渲染后旧行引用全部失效：试听状态清零（openWorkbench 同款）
+        cutKeepSeq = null; cutKeepIdx = 0; cutKeepMode = null;
+        bindCutPlayer();
+      } else if (paneKey === 'rough_compose') {
+        var rcPv = document.getElementById('slirn-rc-player');
+        if (rcPv) bindSpeedControl(rcPv);
+        rcResumeComposeIfNeeded(tid);
+      } else if (paneKey === 'fine_review') {
+        var optPv = revVis('slirn-opt-player');
+        if (optPv) bindSpeedControl(optPv);
+        bindOptRows(tid);
+        setupOptWordsPagination();
+        bindOptRowSearch();
+        bindOptBatchInputs();
+        optInputOverflowInit();
+        var optSt = revVis('slirn-opt-status');
+        if (optSt && optSt.dataset.taskId && optSt.dataset.state === 'running')
+          startOptPolling(optSt.dataset.taskId);
+        var optCutSt = revVis('slirn-opt-cut-status');
+        if (optCutSt && optCutSt.dataset.taskId && optCutSt.dataset.state === 'running')
+          startOptCutPolling(optCutSt.dataset.taskId);
+      } else if (paneKey === 'fine_cut') {
+        bindFineControls();
+        bindFineSteppers();
+        bindCropAspectLink();
+        bindBgWhiteDetector();
+        bindFineMaterialPreviews();
+        if (typeof window.fineDefaultBgmLoad === 'function') {
+          try { window.fineDefaultBgmLoad(); } catch (e) { console.warn('[bgm-load]', e); }
+        }
+      } else if (paneKey === 'logs') {
+        if (!logsState._loaded) { loadLogs(); logsState._loaded = true; }
+      }
+    } catch (e) { console.warn('[wb-pane-mount]', paneKey, e); }
   }
 
   // ===== REQ-20260918-053：执行日志面板（过滤 + 拉取 + 渲染）=====
@@ -2282,6 +2367,43 @@
     vfShow(wrap);
   }, true);
 
+  // ===== REQ-20261030-016：审校播放源选择（低清/faststart 代理，外网 seek 提速）=====
+  // 三个审校面板（字幕/修订/切分）点行播放统一走这里选源：
+  // wrap[data-review] → ?src=review（服务端已生成代理）；wrap[data-review-pending]
+  // → 查一次状态，转好了本次就用代理（此后走 data-review 快路径）。
+  // 代理时间轴与源一致（remux 天然 / 转码保时长），行 start-ms 直接可用。
+  function wbBindReviewFallback(v, wrap) {
+    if (!v || v._slirnRevFb) return;
+    v._slirnRevFb = true;
+    v.addEventListener('error', function() {
+      var s = v.getAttribute('src') || '';
+      if (s.indexOf('src=review') < 0 || !wrap) return;
+      wrap.removeAttribute('data-review');  // 代理产物丢失/损坏 → 回原片
+      var t = v.currentTime || 0;
+      v.src = s.replace('?src=review', '');
+      v.load();
+      var once = function() {
+        v.removeEventListener('loadedmetadata', once);
+        try { v.currentTime = t; } catch (err) {}
+      };
+      v.addEventListener('loadedmetadata', once);
+    });
+  }
+
+  function wbResolveReviewSrc(wrap, tid, cb) {
+    var base = SLIRN_API + '/video/' + encodeURIComponent(tid);
+    if (!wrap) { cb(base); return; }
+    if (wrap.getAttribute('data-review')) { cb(base + '?src=review'); return; }
+    if (!wrap.getAttribute('data-review-pending')) { cb(base); return; }
+    postJSON(SLIRN_API + '/review_proxy_status', {task_id: tid}).then(function(r) {
+      if (r && r.ok && r.ready) {
+        wrap.setAttribute('data-review', '1');
+        wrap.removeAttribute('data-review-pending');
+        cb(base + '?src=review');
+      } else cb(base);
+    }, function() { cb(base); });
+  }
+
   // ===== 字幕播放器：定位播放 + 播放高亮跟随 =====
   function playSubAt(tid, startMs) {
     var wrap = document.getElementById('slirn-sub-player-wrap');
@@ -2289,14 +2411,19 @@
     if (!v) { toast('❌ 播放器未就绪', 'error'); return; }
     if (wrap) vfShow(wrap);
     if (wrap) wrap.style.display = '';
-    if (!v.src) { v.src = SLIRN_API + '/video/' + encodeURIComponent(tid); v.load(); }
-    var go = function() {
-      try { v.currentTime = (startMs || 0) / 1000; } catch (err) {}
-      var p = v.play();
-      if (p && p.catch) p.catch(function() {});
-    };
-    if (v.readyState >= 1) go();
-    else v.addEventListener('loadedmetadata', go, {once: true});
+    wbBindReviewFallback(v, wrap);
+    wbResolveReviewSrc(wrap, tid, function(src) {
+      var cur = v.getAttribute('src');
+      if (!cur) { v.src = src; v.load(); }
+      else if (cur !== src && v.paused) { v.src = src; v.load(); }  // 代理刚转好：无损换源
+      var go = function() {
+        try { v.currentTime = (startMs || 0) / 1000; } catch (err) {}
+        var p = v.play();
+        if (p && p.catch) p.catch(function() {});
+      };
+      if (v.readyState >= 1) go();
+      else v.addEventListener('loadedmetadata', go, {once: true});
+    });
   }
 
   // ===== 倍速显示与控制（REQ-20260916-014）=====
@@ -2460,14 +2587,19 @@
     var v = revVis('slirn-rev-player');
     if (!v) { toast('❌ 播放器未就绪', 'error'); return; }
     if (wrap) vfShow(wrap);
-    if (!v.src) { v.src = SLIRN_API + '/video/' + encodeURIComponent(tid); v.load(); }
-    var go = function() {
-      try { v.currentTime = (startMs || 0) / 1000; } catch (err) {}
-      var p = v.play();
-      if (p && p.catch) p.catch(function() {});
-    };
-    if (v.readyState >= 1) go();
-    else v.addEventListener('loadedmetadata', go, {once: true});
+    wbBindReviewFallback(v, wrap);
+    wbResolveReviewSrc(wrap, tid, function(src) {
+      var cur = v.getAttribute('src');
+      if (!cur) { v.src = src; v.load(); }
+      else if (cur !== src && v.paused) { v.src = src; v.load(); }  // 代理刚转好：无损换源
+      var go = function() {
+        try { v.currentTime = (startMs || 0) / 1000; } catch (err) {}
+        var p = v.play();
+        if (p && p.catch) p.catch(function() {});
+      };
+      if (v.readyState >= 1) go();
+      else v.addEventListener('loadedmetadata', go, {once: true});
+    });
   }
 
   // 修订行连续跳播（REQ-20260917-028）：字幕之间常有无声/停顿空白，逐条连播时
@@ -2498,14 +2630,19 @@
     var v = revVis('slirn-cut-player');
     if (!v) { toast('❌ 播放器未就绪', 'error'); return; }
     if (wrap) vfShow(wrap);
-    if (!v.src) { v.src = SLIRN_API + '/video/' + encodeURIComponent(tid); v.load(); }
-    var goCut = function() {
-      try { v.currentTime = (startMs || 0) / 1000; } catch (err) {}
-      var p = v.play();
-      if (p && p.catch) p.catch(function() {});
-    };
-    if (v.readyState >= 1) goCut();
-    else v.addEventListener('loadedmetadata', goCut, {once: true});
+    wbBindReviewFallback(v, wrap);
+    wbResolveReviewSrc(wrap, tid, function(src) {
+      var cur = v.getAttribute('src');
+      if (!cur) { v.src = src; v.load(); }
+      else if (cur !== src && v.paused) { v.src = src; v.load(); }  // 代理刚转好：无损换源
+      var goCut = function() {
+        try { v.currentTime = (startMs || 0) / 1000; } catch (err) {}
+        var p = v.play();
+        if (p && p.catch) p.catch(function() {});
+      };
+      if (v.readyState >= 1) goCut();
+      else v.addEventListener('loadedmetadata', goCut, {once: true});
+    });
   }
 
   // ===== 切分修剪预览与决策（REQ-20260916-011 → 013 连续播放）=====
@@ -3745,7 +3882,11 @@
     }
     fineSetSaveStatus('保存中…', 'saving');
     var layout = {};
-    document.querySelectorAll('.slirn-fine-slider').forEach(function(s) {
+    // REQ-20261030-013：所有收集都限定在**长视频工作台容器内**（inner）——
+    // 短视频面板在同一页面，它的字体控件也带 data-font-key、启用开关也用
+    // .slirn-fine-enabled；document 级收集会把短视频的值写进长视频的
+    // fine_compose.json（长/短视频参数必须分开）。
+    inner.querySelectorAll('.slirn-fine-slider').forEach(function(s) {
       var key = s.getAttribute('data-key') || '';
       var parts = key.split('.');
       if (parts.length !== 2) return;
@@ -3753,7 +3894,7 @@
       layout[k1] = layout[k1] || {};
       layout[k1][k2] = parseFloat(s.value);
     });
-    document.querySelectorAll('.slirn-fine-enabled, [data-key][type="checkbox"]').forEach(function(c) {
+    inner.querySelectorAll('.slirn-fine-enabled, [data-key][type="checkbox"]').forEach(function(c) {
       var k = c.getAttribute('data-key') || '';
       if (!k) return;
       var parts = k.split('.');
@@ -3790,7 +3931,7 @@
     );
     // 字体
     var font = {};
-    document.querySelectorAll('[data-font-key]').forEach(function(el) {
+    inner.querySelectorAll('[data-font-key]').forEach(function(el) {
       var k = el.getAttribute('data-font-key');
       if (el.type === 'checkbox') font[k] = el.checked;
       else if (el.type === 'number') font[k] = parseInt(el.value, 10);
@@ -3806,7 +3947,7 @@
     }
     // 输出
     var output = {};
-    document.querySelectorAll('[data-output-key]').forEach(function(el) {
+    inner.querySelectorAll('[data-output-key]').forEach(function(el) {
       output[el.getAttribute('data-output-key')] = el.value;
     });
     if (Object.keys(output).length > 0) {
@@ -3819,7 +3960,7 @@
     }
     // REQ-20260919-061 扩展：背景音乐（独立于 layout/font/output）
     var audio = {};
-    document.querySelectorAll('[data-audio-key]').forEach(function(el) {
+    inner.querySelectorAll('[data-audio-key]').forEach(function(el) {
       var k = el.getAttribute('data-audio-key');
       // REQ-20260920-100：data-audio-key 也用于 checkbox（启用开关），不能 parseFloat
       if (el.type === 'checkbox') {
@@ -3830,7 +3971,7 @@
     });
     // REQ-20260920-100：「🎵 启用背景音乐」checkbox 是 .slirn-fine-enabled 单段
     // data-key="audio"，不在上面 data-audio-key 选择器里。单独补一次：
-    var audioEnaCb = document.querySelector('.slirn-fine-enabled[data-key="audio"]');
+    var audioEnaCb = inner.querySelector('.slirn-fine-enabled[data-key="audio"]');
     if (audioEnaCb) {
       audio.enabled = audioEnaCb.checked;
     }
@@ -3845,7 +3986,7 @@
     // REQ-20260921-NNN：生成预览参数（start_h/m/s + duration）作为「设置参数」保存
     // （与 layout/font/output/audio 同级，刷新工作台不丢；用户改完点 💾 即可）。
     var preview = {};
-    document.querySelectorAll('[data-preview-key]').forEach(function(el) {
+    inner.querySelectorAll('[data-preview-key]').forEach(function(el) {
       var k = el.getAttribute('data-preview-key');
       var n = parseInt(el.value, 10);
       if (!isNaN(n)) preview[k] = n;
@@ -3858,7 +3999,9 @@
         }).then(function(r) { return r.json(); })
       );
     }
-    Promise.all(promises).then(function(results) {
+    // REQ-20261030-014：返回 Promise（预览/导出前先等保存完成再渲染，
+    // 否则渲染端点读到的是旧 fine_compose.json）
+    return Promise.all(promises).then(function(results) {
       // REQ-20260919-061 用户反馈：「保存全部」一直报错的根因 — 后端用 `{"ok":true}` 而不是
       // `{"code":0}`，原版写 `r.code !== 0` 会让每个成功响应都被判失败。改成按 `ok` 字段判定，
       // 错误信息也从 `error` 字段取（与 `_err` 返回结构对齐）。
@@ -3899,11 +4042,28 @@
     });
   }
   function bindFineControls() {  // wb 重渲后调用 — 绑所有 fine_cut 控件
+    // REQ-20261030-013：只绑**长视频工作台内**的控件 —— 短视频面板在同一页面，
+    // 它的字体控件也带 data-font-key、启用开关也用 .slirn-fine-enabled；
+    // 绑到短视频控件上会让「改短视频参数」触发长视频 fineSaveAll，
+    // 把短视频的值写进长视频 fine_compose.json（两套参数必须分开）。
+    var scope = document.getElementById('slirn-tab-workbench-inner');
+    if (!scope) return;
     var t = null;
     function debounceSave() {
       if (t) clearTimeout(t);
-      t = setTimeout(fineSaveAll, 300);
+      t = setTimeout(function() { t = null; fineSaveAll(false, false); }, 300);
     }
+    // REQ-20261030-014：预览/导出前的「冲刷」—— 自动保存有 300ms 防抖，
+    // 用户改完参数立刻点「生成预览/导出」时保存还没落盘，渲染端点读到
+    // 旧 fine_compose.json → 预览/导出用旧参数（用户实报「位置没有变」）。
+    // 预览/导出 handler 先调本函数：取消未到期的防抖 + 立即保存并等完成。
+    // 挂 window：bindFineControls 在 IIFE 内，点击分发器跨作用域取用；
+    // 工作台重渲会重新 bind → 覆盖为最新闭包（t 永远指向当前定时器）。
+    window.slirnFineFlushSave = function() {
+      if (t) { clearTimeout(t); t = null; }
+      var p = fineSaveAll(false, false);
+      return (p && typeof p.then === 'function') ? p : Promise.resolve();
+    };
     function updateCropAspect() {
       var wx = document.getElementById('slirn-fine-video-crop_w');
       var hx = document.getElementById('slirn-fine-video-crop_h');
@@ -3970,7 +4130,7 @@
       var scaleNum = document.getElementById('slirn-fine-video-scale_num');
       if (scaleNum && scaleNum.value !== s) scaleNum.value = s;
     }
-    document.querySelectorAll('.slirn-fine-slider, .slirn-fine-enabled, [data-font-key], [data-output-key]').forEach(function(el) {
+    scope.querySelectorAll('.slirn-fine-slider, .slirn-fine-enabled, [data-font-key], [data-output-key]').forEach(function(el) {
       if (el.dataset.fineBound) return;
       el.dataset.fineBound = '1';
       var ev = (el.type === 'checkbox') ? 'change' : 'input';
@@ -4022,7 +4182,9 @@
       }
       return { min: min, max: max, step: step };
     }
-    document.querySelectorAll('.slirn-fine-num[data-for]').forEach(function(num) {
+    var scope = document.getElementById('slirn-tab-workbench-inner');
+    if (!scope) return;
+    scope.querySelectorAll('.slirn-fine-num[data-for]').forEach(function(num) {
       if (num.dataset.numBound) return;
       num.dataset.numBound = '1';
       // REQ-20260919-061a 用户反馈：直接修改输入框，按回车时才调整滑动条位置。
@@ -8184,9 +8346,14 @@
     else if (action === 'fine-preview' || action === 'fine-export') {
       // REQ-20260919-061 Phase B：调 ffmpeg 渲染
       // REQ-20260920-098：直接读参数卡 .slirn-fine-enabled checkbox 状态（覆盖 fc.json）
+      // REQ-20261030-013：限定长视频工作台容器 —— 短视频面板的启用复选框
+      // 同样是 .slirn-fine-enabled[data-key]（键名还相同：video/cover/audio 等），
+      // document 级读取会被短视频面板的勾选状态覆盖。
       function _readPerElementCombo() {
         var combo = {};
-        document.querySelectorAll('.slirn-fine-enabled[data-key]').forEach(function(cb) {
+        var _wb = document.getElementById('slirn-tab-workbench-inner');
+        var _host = _wb || document;
+        _host.querySelectorAll('.slirn-fine-enabled[data-key]').forEach(function(cb) {
           combo[cb.getAttribute('data-key')] = !!cb.checked;
         });
         return combo;
@@ -8201,25 +8368,30 @@
         var _oldText2 = _b.textContent;
         _b.disabled = true;
         _b.textContent = '💾 启动导出...';
-        fetch('/slirn/api/export_fine_video', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ task_id: _tid, combo: _readPerElementCombo() })
-        })
-          .then(function(r) { return r.json(); })
-          .then(function(j) {
-            _b.disabled = false; _b.textContent = _oldText2;
-            if (!j.ok) { toast('❌ ' + (j.error || '启动失败')); return; }
-            // REQ-20260920-077：改用 inline 状态元素（按钮旁），不弹模态框
-            if (j.job_id && typeof startFineExportInline === 'function') {
-              startFineExportInline(_tid, j.job_id, _b);
-            } else {
-              toast('✅ ' + (j.toast || '已启动'));
-            }
+        // REQ-20261030-014：先冲刷防抖中的参数保存再启动导出（防旧参数渲染）
+        var _startExport = function() {
+          fetch('/slirn/api/export_fine_video', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ task_id: _tid, combo: _readPerElementCombo() })
           })
-          .catch(function(e) {
-            _b.disabled = false; _b.textContent = _oldText2;
-            toast('❌ 网络错误: ' + e.message);
-          });
+            .then(function(r) { return r.json(); })
+            .then(function(j) {
+              _b.disabled = false; _b.textContent = _oldText2;
+              if (!j.ok) { toast('❌ ' + (j.error || '启动失败')); return; }
+              // REQ-20260920-077：改用 inline 状态元素（按钮旁），不弹模态框
+              if (j.job_id && typeof startFineExportInline === 'function') {
+                startFineExportInline(_tid, j.job_id, _b);
+              } else {
+                toast('✅ ' + (j.toast || '已启动'));
+              }
+            })
+            .catch(function(e) {
+              _b.disabled = false; _b.textContent = _oldText2;
+              toast('❌ 网络错误: ' + e.message);
+            });
+        };
+        if (window.slirnFineFlushSave) window.slirnFineFlushSave().then(_startExport, _startExport);
+        else _startExport();
         return;
       }
 
@@ -8252,27 +8424,33 @@
       _b.textContent = '🎬 渲染中（' + _timeStr + ' 起 ' + _durStr + ' 秒）...';
       // REQ-20260920-098：把参数卡当前 5 个 checkbox 状态也带过去
       _payload.combo = _readPerElementCombo();
-      fetch(_api, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(_payload)
-      })
-        .then(function(r) { return r.json(); })
-        .then(function(j) {
-          _b.disabled = false; _b.textContent = _oldText;
-          if (j.ok) {
-            if (j.url && typeof openFinePreviewFloat === 'function') {
-              openFinePreviewFloat(j.url, '🎬 合成预览（前 ' + (j.preview_dur || '?') + ' 秒）');
+      // REQ-20261030-014：先冲刷防抖中的参数保存再渲染（防旧参数渲染）——
+      // 用户改完滑块立刻点「生成预览」时 300ms 防抖保存还没落盘。
+      var _startPreview = function() {
+        fetch(_api, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(_payload)
+        })
+          .then(function(r) { return r.json(); })
+          .then(function(j) {
+            _b.disabled = false; _b.textContent = _oldText;
+            if (j.ok) {
+              if (j.url && typeof openFinePreviewFloat === 'function') {
+                openFinePreviewFloat(j.url, '🎬 合成预览（前 ' + (j.preview_dur || '?') + ' 秒）');
+              }
+              var _empty = document.getElementById('slirn-fine-preview-empty');
+              if (_empty) _empty.style.display = 'none';
+              toast('✅ ' + (j.toast || '完成'));
+            } else {
+              toast('❌ ' + (j.error || '渲染失败'));
             }
-            var _empty = document.getElementById('slirn-fine-preview-empty');
-            if (_empty) _empty.style.display = 'none';
-            toast('✅ ' + (j.toast || '完成'));
-          } else {
-            toast('❌ ' + (j.error || '渲染失败'));
-          }
-        }).catch(function(e) {
-          _b.disabled = false; _b.textContent = _oldText;
-          toast('❌ 网络错误: ' + e.message);
-        });
+          }).catch(function(e) {
+            _b.disabled = false; _b.textContent = _oldText;
+            toast('❌ 网络错误: ' + e.message);
+          });
+      };
+      if (window.slirnFineFlushSave) window.slirnFineFlushSave().then(_startPreview, _startPreview);
+      else _startPreview();
     }
     else if (action === 'fine-export-cancel') {
       // REQ-20260920-089：独立可见的取消按钮（不依赖 status 元素 click）

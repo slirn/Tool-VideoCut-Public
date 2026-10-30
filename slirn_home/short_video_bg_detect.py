@@ -41,7 +41,8 @@ _ALPHA_OPAQUE = 128
 # REQ-20261019-211：视频槽是几何事实（模板上的均质挖槽/白区），像素检出
 # 覆盖 ≥25% 设计画布视为「置信」——此时 video 组像素优先于 LLM 估计
 # （LLM 对槽位边界只有近似精度，曾把 y552/h824 的白槽估成 y648/h624，
-# 并在导出前经 ensure_layout_detected 自动回写，视频填不满槽）
+# 视频填不满槽）。REQ-20261030-012 起：像素/AI 结果都只由用户点
+# 「✅ 填充到参数区域」写进参数区，渲染前的检测流不再自动回写
 _PIXEL_VIDEO_MIN_AREA = 0.25 * (_DESIGN_W * _DESIGN_H)
 
 
@@ -455,6 +456,63 @@ def _avatar_shape_hint(region: dict) -> str:
     return ""
 
 
+def _ai_region_map(regions: Any) -> tuple[dict[str, dict], str]:
+    """AI regions → ({区域组: 矩形}, 头像形状提示)。
+
+    按区域名/用途关键词归类（视频/字幕/背景/封面/导师文字/头像）；
+    同一组只取第一个命中的区域。
+    """
+    filled: dict[str, dict] = {}
+    avatar_shape = ""
+    for r in regions or []:
+        if not isinstance(r, dict):
+            continue
+        key = _region_type_key(r)
+        if key and key not in filled:
+            filled[key] = {
+                "x": int(r.get("x") or 0), "y": int(r.get("y") or 0),
+                "w": int(r.get("w") or 0), "h": int(r.get("h") or 0),
+            }
+            if key == "avatar":
+                avatar_shape = _avatar_shape_hint(r)
+    return filled, avatar_shape
+
+
+def _layout_matches(filled: dict[str, dict], layout: dict) -> bool:
+    """参数区当前几何是否已等于识别结果（老项目没有 applied 标记时兜底）。"""
+    if not filled or not isinstance(layout, dict):
+        return False
+    for key, rect in filled.items():
+        cur = layout.get(key) or {}
+        for k in ("x", "y", "w", "h"):
+            if int(cur.get(k) or 0) != int(rect.get(k) or 0):
+                return False
+    return True
+
+
+def is_result_applied(ai_res: dict | None, layout: dict | None = None) -> bool:
+    """该识别结果是否**已经**写入参数区。
+
+    ``apply_detected_to_layout`` 填充时记 ``applied_result_id``（= 当时的
+    ``result_id``）；重新「🤖 分析参数」后 result_id 变化 → 又变回
+    「尚未写入参数区」。结果卡 / 渲染提示都据此判断。
+
+    老项目（填充发生在本标记上线之前）没有 applied 标记 → 用几何比对兜底：
+    参数区当前坐标已等于识别结果 → 视为已写入，避免误报「尚未写入」。
+    """
+    if not isinstance(ai_res, dict) or not ai_res:
+        return False
+    res_id = str(ai_res.get("result_id") or "")
+    if res_id:
+        return str(ai_res.get("applied_result_id") or "") == res_id
+    applied = str(ai_res.get("applied_detected_at") or "")
+    detected = str(ai_res.get("detected_at") or "")
+    if applied:
+        return applied == detected
+    filled, _ = _ai_region_map(ai_res.get("regions") or [])
+    return _layout_matches(filled, layout or {})
+
+
 def apply_detected_to_layout(repo_root: Path | str, task_id: str, project_id: str) -> dict:
     """REQ-20261018-172：按识别结果的区域类型填充到参数区对应组。
 
@@ -468,28 +526,19 @@ def apply_detected_to_layout(repo_root: Path | str, task_id: str, project_id: st
        AI 没填视频组时兜底；AI 填了但像素检出 ≥25% 画布（置信）时
        **像素优先**（REQ-20261019-211：槽位是几何事实，LLM 边界只是近似）。
     返回 {layout: video 区域或 None, filled: {组: 区域}, source: ai|detect|mixed}。
+
+    ⚠️ 这是**唯一**写 params.layout 的入口（REQ-20261030-012）：分析只出
+    结果，渲染前的检测流也不再自动回写 —— 参数区只由用户点
+    「✅ 填充到参数区域」改变。
     """
     root = Path(repo_root)
     project = svc.load_project(root, task_id, project_id)
     from slirn_home import short_video_fine as _fine
     params = _fine._get_params(project)
 
-    filled: dict[str, dict] = {}
-    avatar_shape = ""
     ai = params.get("ai_layout_result")
     regions = ai.get("regions") if isinstance(ai, dict) else None
-    if isinstance(regions, list):
-        for r in regions:
-            if not isinstance(r, dict):
-                continue
-            key = _region_type_key(r)
-            if key and key not in filled:
-                filled[key] = {
-                    "x": int(r.get("x") or 0), "y": int(r.get("y") or 0),
-                    "w": int(r.get("w") or 0), "h": int(r.get("h") or 0),
-                }
-                if key == "avatar":
-                    avatar_shape = _avatar_shape_hint(r)
+    filled, avatar_shape = _ai_region_map(regions)
 
     source = "ai" if filled else ""
     region = params.get("detected_region")
@@ -527,11 +576,21 @@ def apply_detected_to_layout(repo_root: Path | str, task_id: str, project_id: st
         _old = layout.get(_key) or {}
         _keep = {k: v for k, v in _old.items() if k not in ("x", "y", "w", "h")}
         layout[_key] = {**_keep, **_rect}
-    # REQ-20261018-189：适配方式（video_fit）已移除，填充不再清该键
+    # REQ-20261029-010：适配方式（video.video_fit）在 video 组内，填充时
+    # 与其它组内键一样保留（只覆盖几何四键）
     # REQ-20261018-173：头像区域被识别到且文字里能看出形状 → 一并带上
     if avatar_shape:
         layout["avatar_shape"] = avatar_shape
     params["layout"] = layout
+    # REQ-20261030-012：记「本次识别结果已写入参数区」—— 结果卡据此显示
+    # 「已写入参数区」/「尚未写入参数区」；再点「🤖 分析参数」后 detected_at
+    # 变化 → 又回到「尚未写入」，提醒用户重新填充。
+    if isinstance(ai, dict):
+        ai["applied_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ai["applied_result_id"] = str(ai.get("result_id") or "")
+        ai["applied_detected_at"] = str(ai.get("detected_at") or "")
+        ai["applied_source"] = source or "ai"
+        params["ai_layout_result"] = ai
     s = svc.get_stage_state(project, "stage6_fine")
     s["params"] = params
     svc.set_stage_state(project, "stage6_fine", s)

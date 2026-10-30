@@ -217,6 +217,10 @@ def apply_to_segments(
     out = []
     for seg in segments:
         s = dict(seg)
+        # REQ-20261030-018：先清掉上一轮遗留的 new_text —— 本函数是**全量重算**
+        # （「无生效项的段不加该字段」）。不清的话，撤销整行替换 / 撤销局部替换后
+        # 旧的改写文本会残留，SRT 仍显示已撤销的内容。
+        s.pop("new_text", None)
         rid = str(s.get("i"))
         edit = edits_by_seg.get(rid)
         if edit is not None and edit != str(s.get("text", "")):
@@ -1117,7 +1121,10 @@ def save_decisions(
     applied_n = 0
     for occ in data.get("occurrences") or []:
         d = dec_by_id.get(int(occ["occ_id"]))
-        after = str((d or {}).get("after", occ.get("after")))
+        # REQ-20261030-018：显式 None 归一成空串 —— str(None) 会变成字面量
+        # "None"（非空且 ≠ before）→ 被判为生效，把 "None" 写进字幕。
+        raw_after = (d or {}).get("after", occ.get("after"))
+        after = "" if raw_after is None else str(raw_after)
         want = bool((d or {}).get("applied"))
         # REQ-038：处理进度落盘 — 出现处切换过 ✓/✕ 或编辑过替换值即 reviewed
         occ["reviewed"] = bool((d or {}).get("reviewed"))

@@ -162,7 +162,11 @@ DEFAULT_PARAMS: dict[str, Any] = {
         # 不渲染；cover/title 同口径；video 恒用，它是内容本体）
         "video": {"x": 0, "y": 0, "w": 1080, "h": 1920, "enabled": True,
                   "crop_x": 0, "crop_y": 0, "crop_w": 1920, "crop_h": 1080,
-                  "crop_aspect_lock": True, "crop_region_lock": False},
+                  "crop_aspect_lock": True, "crop_region_lock": False,
+                  # REQ-20261029-010：适配方式（UI 复选框）—— True = 拉伸
+                  # 铺满视频区域；False = 按截取视频宽高比等比缩放、区域内
+                  # 居中。缺省 True（与 REQ-20261018-189 起的固定语义一致）
+                  "video_fit": True},
         "subtitle": {"x": 60, "y": 1620, "w": 960, "h": 240, "enabled": True},
         "cover": {"x": 0, "y": 0, "w": 1080, "h": 1080, "enabled": True},
         "bg": {"x": 0, "y": 0, "w": 1080, "h": 1920, "enabled": True},
@@ -343,7 +347,8 @@ def save_params(repo_root: Path | str, task_id: str, project_id: str,
     # REQ-20261018-185：封面标题文字同口径（渲染时注入，不落盘）
     (current.get("title") or {}).pop("text", None)
     (current.get("cover_title") or {}).pop("text", None)
-    # REQ-20261018-189：适配方式（video_fit）已移除，老项目残留键随保存清出
+    # REQ-20261018-189：适配方式曾移除，老项目残留的**顶层** video_fit 键
+    # 随保存清出（现行键 = layout.video.video_fit，见下）
     (current.get("layout") or {}).pop("video_fit", None)
     # REQ-20261017-164：分辨率白名单归一
     out = current.get("output") or {}
@@ -367,6 +372,9 @@ def save_params(repo_root: Path | str, task_id: str, project_id: str,
         vid["crop_region_lock"] = bool(vid["crop_region_lock"])
     if vid.get("crop_region_lock") and vid.get("crop_aspect_lock"):
         vid["crop_aspect_lock"] = False
+    # REQ-20261029-010：适配方式规整 bool（前端可能传 "on"/1；缺省 = 勾选
+    # = 铺满区域，与历史行为一致）
+    vid["video_fit"] = bool(vid.get("video_fit", True))
     s = svc.get_stage_state(project, "stage6_fine")
     s["params"] = current
     svc.set_stage_state(project, "stage6_fine", s)
@@ -825,7 +833,12 @@ def run_fine_batch(repo_root: Path | str, task_id: str, project_id: str,
     """批量精剪：按 stage5_coarse.highlights 全部完成。"""
     root = Path(repo_root)
     # REQ-20261018-176：渲染前确保区域检测新鲜（整批一次，不逐条跑）
-    _sv_compose.ensure_layout_detected(root, task_id, project_id)
+    # REQ-20261030-012：检测只刷新识别结果，**不写参数区** —— 参数区只由
+    # 用户点「✅ 填充到参数区域」写入；导出按参数区当前值渲染
+    det = _sv_compose.ensure_layout_detected(root, task_id, project_id)
+    if det.get("pending_fill"):
+        log.warning("[fine] 有更新的识别结果尚未填充到参数区，"
+                    "本次导出按参数区当前值渲染")
     project = svc.load_project(root, task_id, project_id)
     s5 = svc.get_stage_state(project, "stage5_coarse")
     hls = s5.get("highlights") or []
@@ -853,7 +866,8 @@ def run_fine_batch(repo_root: Path | str, task_id: str, project_id: str,
     s7["highlights"] = out
     svc.set_stage_state(project, "stage6_fine", s7)
     svc.save_project(root, project)
-    return {"results": out, "count": len(out)}
+    return {"results": out, "count": len(out),
+            "pending_fill": bool(det.get("pending_fill"))}
 
 
 def run_fine_single(repo_root: Path | str, task_id: str, project_id: str,
@@ -865,7 +879,11 @@ def run_fine_single(repo_root: Path | str, task_id: str, project_id: str,
     """
     root = Path(repo_root)
     # REQ-20261018-176：渲染前确保区域检测新鲜（单条入口也先检测）
-    _sv_compose.ensure_layout_detected(root, task_id, project_id)
+    # REQ-20261030-012：只刷新识别结果，不写参数区（见 run_fine_batch）
+    det = _sv_compose.ensure_layout_detected(root, task_id, project_id)
+    if det.get("pending_fill"):
+        log.warning("[fine] 有更新的识别结果尚未填充到参数区，"
+                    "本次导出按参数区当前值渲染")
     res = run_fine_one(root, task_id, project_id, int(index),
                        progress_cb=progress_cb)
     project = svc.load_project(root, task_id, project_id)
@@ -882,7 +900,8 @@ def run_fine_single(repo_root: Path | str, task_id: str, project_id: str,
     s6["highlights"] = merged
     svc.set_stage_state(project, "stage6_fine", s6)
     svc.save_project(root, project)
-    return {"results": [res], "count": 1}
+    return {"results": [res], "count": 1,
+            "pending_fill": bool(det.get("pending_fill"))}
 
 
 # ---------- 预览：2-30s 快速切段 ----------

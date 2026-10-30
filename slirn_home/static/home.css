@@ -1724,6 +1724,14 @@ input[type="checkbox"]:focus-visible {
 .slirn-wb-stage.active { border-color: var(--accent-solid, #4f7cff); background: var(--bg-hover, rgba(127,127,127,0.08)); }
 
 .slirn-wb-panes { min-width: 0; }
+/* REQ-20261030-016：懒渲染面板占位壳（进入工作台只渲染 focus 面板，其余切换时按需拉取） */
+.slirn-wb-pane-lazy {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 8px; min-height: 220px; padding: 32px 16px; text-align: center;
+  color: var(--text-muted); font-size: 13px;
+  border: 1px dashed var(--border, rgba(0,0,0,0.12)); border-radius: 12px;
+}
+.slirn-wb-pane-lazy .slirn-empty-icon { font-size: 26px; opacity: 0.7; animation: slirn-pulse 1.6s ease-in-out infinite; }
 .slirn-wb-pane-card { background: var(--card-bg, inherit); border-radius: 12px; padding: 14px 16px; }
 .slirn-wb-pane-title { font-weight: 700; font-size: 14px; margin-bottom: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
@@ -4332,6 +4340,34 @@ input[type="checkbox"]:focus-visible {
   line-height: 1.25;
   word-break: break-word;
 }
+/* REQ-20261030-011：短视频精剪「适配方式」行 —— 复选框与说明文字占满右侧
+   整列（grid-column 2/-1），说明另起一行。
+   此前复选框与长说明文案并排落在三列栅格（160px | 1fr | auto）的后两列，
+   auto 列被长文案撑开、1fr 被挤窄 →「铺满视频区域」被压成竖排单字。 */
+.slirn-fine-fit-ctrl {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  min-width: 0;
+}
+.slirn-fine-fit-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--text);
+  white-space: nowrap;
+}
+.slirn-fine-fit-hint {
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+/* 该行是两行结构（复选框行 + 说明行）—— 标签与第一行齐平，不被居中到
+   说明行上（:has 不支持时退化为居中，不影响可用性） */
+.slirn-fine-param:has(.slirn-fine-fit-ctrl) { align-items: start; }
 /* REQ-20260919-061a v7：num 直接显示（不再嵌在 num-group 容器里），加自身边框。
    width 70px 含浏览器原生 stepper 的 ~16px，显示 4 位整数（如 1920）刚好。 */
 .slirn-fine-num {
@@ -5719,6 +5755,28 @@ input[type="checkbox"]:focus-visible {
 }
 .slirn-sv-stage-pane.active {
   display: block;
+}
+
+/* REQ-20261030-017：懒渲染占位壳（点阶段时才真正渲染内容） */
+.slirn-sv-pane-lazy {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-height: 160px;
+  padding: 24px 16px;
+  border: 1px dashed var(--border, #e2e8f0);
+  border-radius: 12px;
+  background: var(--bg-soft, #f8fafc);
+  color: var(--text-muted, #64748b);
+  font-size: 13px;
+}
+.slirn-sv-pane-lazy-icon {
+  font-size: 16px;
+}
+.slirn-sv-pane-lazy-text {
+  color: var(--text-muted, #64748b);
 }
 
 .slirn-stage {
@@ -7165,6 +7223,12 @@ textarea.slirn-sv-mat-desc {
   color: #0f172a;
   white-space: pre-wrap;
   word-break: break-word;
+}
+/* REQ-20261030-017：SRT 预览分页的「加载更多」 */
+.slirn-stage2-srt-more {
+  padding: 8px 10px;
+  border-top: 1px solid #e2e8f0;
+  text-align: center;
 }
 
 /* REQ-20261018-172：背景区检测两个主操作按钮 —— 实底色突出，一眼是按钮 */

@@ -25,9 +25,33 @@ class VideoInfo(NamedTuple):
 def get_video_duration(path: Path) -> float | None:
     """调用 ffprobe 获取时长（秒）。
 
+    REQ-20261030-015：mtime+size 键控缓存 —— 工作台一次渲染调 2 次、
+    每次重渲/刷新又调，每次都是 ~100ms 的 ffprobe 子进程；产物视频在
+    重新合成前路径不变，缓存命中后 0 开销（文件更新 → mtime 变 → 失效）。
+
     Returns:
         时长（秒），失败返回 None（D1 决策）。
     """
+    p = Path(path)
+    try:
+        st = p.stat()
+    except OSError:
+        _DUR_CACHE.pop(str(p), None)
+        return None
+    hit = _DUR_CACHE.get(str(p))
+    if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+        return hit[2]
+    dur = _ffprobe_duration(p)
+    # 失败结果也缓存（负缓存），同一坏文件不再反复起子进程
+    _DUR_CACHE[str(p)] = (st.st_mtime_ns, st.st_size, dur)
+    return dur
+
+
+_DUR_CACHE: dict[str, tuple[int, int, float | None]] = {}
+
+
+def _ffprobe_duration(path: Path) -> float | None:
+    """真正起 ffprobe 子进程（get_video_duration 的缓存内层）。"""
     try:
         result = subprocess.run(
             [
@@ -104,6 +128,9 @@ def cut_video(src: Path, dst: Path, start: str, end: str) -> None:
         "-i", str(src),
         "-c", "copy",          # stream copy，不重新编码
         "-avoid_negative_ts", "make_zero",
+        # REQ-20261030-016：moov 索引前置 —— 否则审校播放器（截取段）每次起播
+        # 都要先去文件尾取索引，外网受限带宽下点字幕定位播放要数秒。
+        "-movflags", "+faststart",
         str(dst),
     ]
 

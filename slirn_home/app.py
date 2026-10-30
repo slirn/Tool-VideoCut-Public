@@ -460,12 +460,15 @@ def _render_subtitle_zone(task_id: str, t, mgr: TaskManager) -> str:
 
     gen_btn_label = "🔄 重新生成字幕" if (meta and meta.get("segments")) else "🎙 生成字幕"
 
+    from slirn_home import review_proxy as _rp_mod
+    _rp_attrs = _rp_mod.render_hint(mgr, task_id)
+
     return f'''<div class="slirn-card" style="margin-top:16px;">
         <div class="slirn-panel-header">
             <div class="slirn-panel-title">🎬 处理剪辑 · 第 1 步：生成字幕</div>
         </div>
         <div class="slirn-form-hint">{hint}</div>
-        <div id="slirn-sub-player-wrap" class="slirn-video-wrap slirn-sub-player-wrap" style="display:none;">
+        <div id="slirn-sub-player-wrap" class="slirn-video-wrap slirn-sub-player-wrap" style="display:none;"{_rp_attrs}>
             <video id="slirn-sub-player" controls preload="metadata"></video>
         </div>
         <div id="slirn-asr-status" class="slirn-status-msg" style="display:none;"
@@ -749,6 +752,9 @@ def _render_revision_zone(task_id: str, t, mgr: TaskManager) -> str:
         rev_spk_bar = '<div id="slirn-rev-spk-bar" class="slirn-rev-spk-bar" style="display:none;"></div>'
         rev_spk_btn_label = "👤 关联人员ID"
 
+    from slirn_home import review_proxy as _rp_mod
+    _rp_attrs = _rp_mod.render_hint(mgr, task_id)
+
     return f'''<div class="slirn-card" style="margin-top:16px;">
         <div class="slirn-panel-header"><div class="slirn-panel-title">🎬 处理剪辑 · 第 2 步：字幕修订</div></div>
         <div class="slirn-sub-meta">{stats}</div>
@@ -790,7 +796,7 @@ def _render_revision_zone(task_id: str, t, mgr: TaskManager) -> str:
           <span class="slirn-batch-hint">按内容定位字幕（不区分大小写）；筛选生效时只在可见行中搜</span>
         </div>
         {rev_spk_bar}
-        <div id="slirn-rev-player-wrap" class="slirn-video-wrap slirn-sub-player-wrap" style="display:none;">
+        <div id="slirn-rev-player-wrap" class="slirn-video-wrap slirn-sub-player-wrap" style="display:none;"{_rp_attrs}>
             <video id="slirn-rev-player" controls preload="metadata"></video>
         </div>
         <div id="slirn-rev-status" class="slirn-status-msg" style="{status_display};"
@@ -1063,6 +1069,9 @@ def _render_cutlist_zone(task_id: str, t, mgr: TaskManager) -> str:
         main_btn = (f'<button class="slirn-btn slirn-btn-primary" data-action="build-cutlist"'
                     f' data-task-id="{_esc(task_id)}">✅ 生成切分清单并完成本阶段</button>')
 
+    from slirn_home import review_proxy as _rp_mod
+    _rp_attrs = _rp_mod.render_hint(mgr, task_id)
+
     return f'''<div class="slirn-card" style="margin-top:16px;">
         <div class="slirn-panel-header"><div class="slirn-panel-title">✂️ 处理剪辑 · 第 3 步：切分修剪</div></div>
         <div class="slirn-sub-meta">{stats_line}</div>
@@ -1073,7 +1082,7 @@ def _render_cutlist_zone(task_id: str, t, mgr: TaskManager) -> str:
         点标记徽章翻转去留；组头「▶ 试听」同样只播本组保留部分；快捷键与字幕修订阶段一致：
         ↑↓ 切换 · 空格 播/停 · R 重播 · K/D/S 整条改判（保留/删除/切分）。</div>
         {fb_hint}{stale_note}
-        <div id="slirn-cut-player-wrap" class="slirn-video-wrap slirn-sub-player-wrap" style="display:none;">
+        <div id="slirn-cut-player-wrap" class="slirn-video-wrap slirn-sub-player-wrap" style="display:none;"{_rp_attrs}>
             <video id="slirn-cut-player" controls preload="metadata"></video>
         </div>
         {spk_bar}
@@ -2800,6 +2809,66 @@ def _render_fine_cut_zone(task_id: str, t, mgr: TaskManager) -> str:
     )
 
 
+# REQ-20261030-016：工作台面板 key 全集（渲染顺序）+ 懒渲染集合。
+# 轻面板（assets / logs）随工作台一次性渲染；重面板只渲染 focus 那个，
+# 其余给占位壳（data-lazy-pane），前端 switchWbPane 按需 POST /wb_pane 拉取。
+_WB_PANE_KEYS = ("assets", "subtitle", "subtitle_review", "rough_cut",
+                 "rough_compose", "fine_review", "fine_cut", "logs")
+_WB_LAZY_PANES = {"subtitle", "subtitle_review", "rough_cut",
+                  "rough_compose", "fine_review", "fine_cut"}
+# 三个审校面板（点行定位播放）触发低清/faststart 代理生成（幂等）
+_REVIEW_PROXY_HOOK_PANES = {"subtitle", "subtitle_review", "rough_cut"}
+
+
+def _pane_planned(i: int, desc: str) -> str:
+    return (
+        '<div class="slirn-empty"><div class="slirn-empty-icon">🚧</div>'
+        '<div class="slirn-empty-text">规划中 — 该阶段将在后续版本提供</div>'
+        f'<div class="slirn-form-hint">{_esc(desc)}</div></div>'
+    )
+
+
+def _wb_pane_content(key: str, task_id: str, t, mgr: TaskManager) -> str | None:
+    """渲染单个工作台面板（focus 面板与 /wb_pane 端点共用）。
+
+    返回 None = 该 key 无专属渲染器（规划中阶段 → 调用方落 _pane_planned）。
+    """
+    if key in _REVIEW_PROXY_HOOK_PANES:
+        # REQ-20261030-016：审校面板渲染 = 用户即将点行播放 → 幂等起代理
+        try:
+            from slirn_home import review_proxy
+            review_proxy.maybe_start(mgr, task_id)
+        except Exception:  # noqa: BLE001 — 代理失败绝不影响面板渲染
+            pass
+    if key == "assets":
+        video_disp, seg_disp, _hw = _task_echo_fragments(t)
+        rows = "".join([
+            f'<div class="slirn-detail-row"><div class="slirn-detail-key">{k}</div><div class="slirn-detail-val">{v}</div></div>'
+            for k, v in [
+                ("原始视频", f"{video_disp}<div class='slirn-detail-sub'>{_esc(str(t.original_video_source))}</div>"),
+                ("截取段", seg_disp),
+                ("热词", _hw),
+            ]
+        ])
+        return (f'<div class="slirn-wb-pane-card"><div class="slirn-wb-pane-title">📦 资产清单</div>{rows}</div>')
+    if key == "subtitle":
+        return _render_subtitle_zone(task_id, t, mgr)
+    if key == "subtitle_review":
+        return _render_revision_zone(task_id, t, mgr)
+    if key == "rough_cut":
+        return _render_cutlist_zone(task_id, t, mgr)
+    if key == "rough_compose":
+        return _render_rough_compose_zone(task_id, t, mgr)
+    if key == "fine_review":
+        return _render_optimize_zone(task_id, t, mgr)
+    if key == "fine_cut":
+        # REQ-20260919-061：精剪视频·四素材合成器（Phase A 骨架）
+        return _render_fine_cut_zone(task_id, t, mgr)
+    if key == "logs":
+        return _render_exec_logs_pane(task_id)  # REQ-20260918-053
+    return None
+
+
 def _render_workbench(task_id: str, mgr: TaskManager) -> str:
     """剪辑工作台：顶部任务信息 + 左侧阶段步骤条 + 右侧各阶段执行面板。"""
     try:
@@ -2863,47 +2932,36 @@ def _render_workbench(task_id: str, mgr: TaskManager) -> str:
     )
 
     # ---- 右：各阶段面板 ----
-    def _pane_planned(i: int, desc: str) -> str:
-        return (
-            '<div class="slirn-empty"><div class="slirn-empty-icon">🚧</div>'
-            '<div class="slirn-empty-text">规划中 — 该阶段将在后续版本提供</div>'
-            f'<div class="slirn-form-hint">{_esc(desc)}</div></div>'
-        )
-
-    assets_pane = "".join([
-        f'<div class="slirn-detail-row"><div class="slirn-detail-key">{k}</div><div class="slirn-detail-val">{v}</div></div>'
-        for k, v in [
-            ("原始视频", f"{video_disp}<div class='slirn-detail-sub'>{_esc(str(t.original_video_source))}</div>"),
-            ("截取段", seg_disp),
-            ("热词", hotwords_disp),
-        ]
-    ])
-
-    panes = {
-        "assets": f'<div class="slirn-wb-pane-card"><div class="slirn-wb-pane-title">📦 资产清单</div>{assets_pane}</div>',
-        "subtitle": _render_subtitle_zone(task_id, t, mgr),
-        "subtitle_review": _render_revision_zone(task_id, t, mgr),
-        "rough_cut": _render_cutlist_zone(task_id, t, mgr),
-        "rough_compose": _render_rough_compose_zone(task_id, t, mgr),
-        "fine_review": _render_optimize_zone(task_id, t, mgr),
-        # REQ-20260919-061：精剪视频·四素材合成器（Phase A 骨架）
-        "fine_cut": _render_fine_cut_zone(task_id, t, mgr),
-        "logs": _render_exec_logs_pane(task_id),  # REQ-20260918-053
-    }
-    for i, (key, _st, _t2, _ic, desc) in enumerate(_WB_STAGES):
-        if key in panes:
-            continue
-        panes[key] = _pane_planned(i, desc)
-
     hidden_attr = ' style="display:none;"'
     # REQ-20260920-086：pane 渲染迭代所有 panes key（含 logs 等非流水线视图）。
     # 旧实现只迭代 _WB_STAGES → logs 等非流水线 pane 从未渲染到 HTML —— 是历史 BUG。
     # 现在 panes dict 里所有 key 都参与渲染（含 logs）；focus 那一项默认显示，其他隐藏。
+    #
+    # REQ-20261030-016 懒渲染：粗剪 4MB / 字幕审校 3.1MB / 优化审校 1.7MB 这些
+    # 重面板在进入工作台时全部渲染（哪怕只看一个）——渲染耗时 + HTML 体积都
+    # 白花。现在只渲染 focus 面板 + 轻面板（assets/logs），其余渲染占位壳，
+    # 用户点左侧阶段时前端 POST /wb_pane 按需拉取（switchWbPane → wbPaneMount）。
     focus_key = _WB_STAGES[focus][0]
-    pane_html = "".join(
-        f'<div class="slirn-wb-pane" id="slirn-wb-pane-{key}"{hidden_attr if key != focus_key else ""}>{panes[key]}</div>'
-        for key in panes.keys()
-    )
+    pane_parts: list[str] = []
+    for key in _WB_PANE_KEYS:
+        lazy = key in _WB_LAZY_PANES and key != focus_key
+        if lazy:
+            pane_parts.append(
+                f'<div class="slirn-wb-pane" id="slirn-wb-pane-{key}"{hidden_attr}'
+                f' data-lazy-pane="1">'
+                f'<div class="slirn-wb-pane-lazy"><div class="slirn-empty-icon">⏳</div>'
+                f'<div class="slirn-empty-text">面板内容按需加载 — 点击左侧阶段即载入</div></div></div>'
+            )
+            continue
+        content = _wb_pane_content(key, task_id, t, mgr)
+        if content is None:
+            desc = next((d for k, _s, _t2, _ic, d in _WB_STAGES if k == key), "")
+            idx = next((i for i, (k, *_r) in enumerate(_WB_STAGES) if k == key), 0)
+            content = _pane_planned(idx, desc)
+        pane_parts.append(
+            f'<div class="slirn-wb-pane" id="slirn-wb-pane-{key}"{hidden_attr if key != focus_key else ""}>{content}</div>'
+        )
+    pane_html = "".join(pane_parts)
 
     return f'''<div id="slirn-tab-workbench-inner" class="slirn-tab-inner" data-task-id="{_esc(task_id)}">
     <div class="slirn-card slirn-wb-top">
@@ -4480,6 +4538,52 @@ def _register_slirn_api(
                      len(states) - 1)
         return _ok("", states=states, focus=focus,
                    panes=[k for k, *_rest in _WB_STAGES])
+
+    @app.app.post("/slirn/api/wb_pane")
+    async def wb_pane(body: dict = Body(default_factory=dict)):
+        """按需渲染单个工作台面板（REQ-20261030-016 懒渲染）。
+
+        进入工作台只渲染 focus 面板（重面板不再全量渲染），用户点左侧阶段时
+        前端带 pane key 来取。渲染放线程池（与 /workbench 同因：数 MB HTML）。
+        """
+        tid = (body.get("task_id") or "").strip()
+        pane = (body.get("pane") or "").strip()
+        if not tid:
+            return _err("缺少 task_id")
+        if pane not in _WB_PANE_KEYS:
+            return _err(f"未知面板: {pane}")
+        try:
+            t = mgr.get(tid)
+        except Exception as e:  # noqa: BLE001
+            return _err(f"任务不存在: {e}")
+        from starlette.concurrency import run_in_threadpool
+        html = await run_in_threadpool(_wb_pane_content, pane, tid, t, mgr)
+        if html is None:
+            idx = next((i for i, (k, *_r) in enumerate(_WB_STAGES) if k == pane), 0)
+            desc = next((d for k, _s, _t2, _ic, d in _WB_STAGES if k == pane), "")
+            html = _pane_planned(idx, desc)
+        # _ok(html) 的形参就是 html（内容直接落 "html" 键）
+        return _ok(html, pane=pane)
+
+    @app.app.post("/slirn/api/review_proxy_status")
+    async def review_proxy_status(body: dict = Body(default_factory=dict)):
+        """审校播放代理状态（REQ-20261030-016）。
+
+        ready = 产物已在磁盘（播放器换 ?src=review）。前端只在 data-review-pending
+        时查询：点行定位播放前查一次，代理转好了就切过去（外网 seek 提速）。
+        """
+        from slirn_home import review_proxy
+
+        tid = (body.get("task_id") or "").strip()
+        if not tid:
+            return _err("缺少 task_id")
+        try:
+            outputs_dir = mgr.tasks_dir / tid / "outputs"
+        except Exception as e:  # noqa: BLE001
+            return _err(f"任务不存在: {e}")
+        ready = review_proxy._proxy_matches_source(
+            outputs_dir, review_proxy._current_source(mgr, tid))
+        return _ok("", ready=ready, job=review_proxy.job_status(tid))
 
     # ========== REQ-20260919-061：精剪视频·四素材合成器 API ==========
 
@@ -6418,6 +6522,16 @@ def _register_slirn_api(
                 else:
                     p = mgr.tasks_dir / tid / "outputs" / f"{src_q}.mp4"
                     video = p if p.exists() else None
+            elif src_q == "review":
+                # REQ-20261030-016：审校播放代理（480p 转码 / faststart 无损 remux）
+                # —— 时间轴与源一致，审校行的 start-ms 直接可用；
+                # 源变了（重新截取）→ 旧代理作废，不给（前端回原片）
+                from slirn_home import review_proxy as _rp
+
+                _od = mgr.tasks_dir / tid / "outputs"
+                _px = _rp.proxy_path(_od)
+                video = _px if _rp._proxy_matches_source(
+                    _od, _rp._current_source(mgr, tid)) else None
             else:
                 video, _label = _resolve_task_video(t)
         except Exception:  # noqa: BLE001
@@ -6438,10 +6552,14 @@ def _register_slirn_api(
                 break
 
         start, end, status = 0, size - 1, 200
+        # REQ-20261030-016：代理产物生成后不再变 → 允许缓存（外网重进面板时
+        # 浏览器可复用已取的 moov/片段）；其余源（可被重新生成覆盖）保持不缓存
+        cache_hdr = (b"public, max-age=86400" if src_q == "review"
+                     else b"no-cache")
         headers = [
             (b"content-type", mime.encode()),
             (b"accept-ranges", b"bytes"),
-            (b"cache-control", b"no-cache"),
+            (b"cache-control", cache_hdr),
         ]
         if range_hdr:
             m2 = _re.search(r"bytes=(\d*)-(\d*)", range_hdr)
@@ -7720,6 +7838,70 @@ def _register_slirn_api(
         _inject_stage3_highlights(project)
         return _ok(project=project, html=_sv_ui.render_project(project, repo_root=repo_root))
 
+    @app.app.post("/slirn/api/sv_pane")
+    async def sv_pane(body: dict = Body(default_factory=dict)):
+        """REQ-20261030-017：短视频阶段面板懒渲染 —— 只渲染这一个阶段。
+
+        render_project 首屏只内联焦点阶段，其余留 data-sv-lazy="1" 占位壳
+        （实测大项目首屏 1.25MB：stage2 内联整份 SRT 801KB + stage4 356KB）。
+        用户点阶段时前端 POST 本端点按需拉那一个面板。
+        """
+        tid = (body.get("task_id") or "").strip()
+        pid = (body.get("project_id") or "").strip()
+        stage = (body.get("stage") or "").strip()
+        if not tid or not pid:
+            return _err("缺少 task_id 或 project_id")
+        if stage not in _sv_ui._SV_STAGE_PANE_KEYS:
+            return _err(f"未知阶段面板: {stage}")
+        try:
+            project = _sv_service.load_project(repo_root, tid, pid)
+        except Exception as e:  # noqa: BLE001
+            return _err(f"读取项目失败: {e}")
+        _inject_stage3_highlights(project)
+        try:
+            html = _sv_ui.render_stage_pane(stage, project, repo_root=repo_root)
+        except Exception as e:  # noqa: BLE001
+            log.exception("sv_pane render failed")
+            return _err(f"渲染失败: {e}")
+        return _ok(html=html, stage=stage)
+
+    @app.app.post("/slirn/api/sv_srt_preview")
+    async def sv_srt_preview(body: dict = Body(default_factory=dict)):
+        """REQ-20261030-017：Stage 2 的 SRT 预览分页（加载更多）。
+
+        整份 raw.srt 内联进 Stage 2 卡片是 800KB（2900 行），外网带宽下光
+        这一个预览就要好几秒 —— 首屏只带 200 行，其余点「加载更多」再续。
+        """
+        tid = (body.get("task_id") or "").strip()
+        pid = (body.get("project_id") or "").strip()
+        if not tid or not pid:
+            return _err("缺少 task_id 或 project_id")
+        try:
+            offset = int(body.get("offset") or 0)
+        except (TypeError, ValueError):
+            offset = 0
+        try:
+            limit = int(body.get("limit") or 0)
+        except (TypeError, ValueError):
+            limit = 0
+        try:
+            project = _sv_service.load_project(repo_root, tid, pid)
+        except Exception as e:  # noqa: BLE001
+            return _err(f"读取项目失败: {e}")
+        s2 = (project.get("pipeline") or {}).get("stage2_extract") or {}
+        srt_rel = str(s2.get("srt_path") or "")
+        if not srt_rel:
+            return _err("尚未生成字幕文件")
+        root_path = Path(str(repo_root))
+        srt_abs = root_path / srt_rel
+        try:
+            data = _sv_ui.render_srt_preview_page(
+                str(srt_abs), offset=offset, limit=limit or _sv_ui._SRT_PREVIEW_PAGE)
+        except Exception as e:  # noqa: BLE001
+            log.exception("sv_srt_preview failed")
+            return _err(f"渲染失败: {e}")
+        return _ok(**data)
+
     @app.app.post("/slirn/api/short_video_save")
     async def short_video_save(body: dict = Body(default_factory=dict)):
         tid = (body.get("task_id") or "").strip()
@@ -8921,6 +9103,16 @@ def _register_slirn_api(
         job = _sv_fine.job_status(tid, pid) or {}
         toast = (f"🎬 片段 #{idx} 精剪已启动" if idx else "🎬 精剪已启动") \
             if started else "⏳ 精剪已在进行中"
+        # REQ-20261030-012：导出按参数区当前值渲染；识别结果还没填进参数区
+        # 时提醒一句（导出前只读检查，不调 LLM、不改任何东西）
+        if started:
+            from slirn_home import short_video_compose as _sv_cmp
+            try:
+                if _sv_cmp.layout_fill_pending(repo_root, tid, pid):
+                    toast += ("；⚠️ 有更新的识别结果还没填充到参数区，"
+                              "本次导出按参数区当前值渲染")
+            except Exception as e:  # noqa: BLE001 — 提醒失败不阻断导出
+                log.warning("stage7 export pending-check failed: %s", e)
         return _ok(running=bool(started), job=job, index=idx, toast=toast)
 
     @app.app.post("/slirn/api/short_video_stage7_clip_save")
@@ -9242,9 +9434,16 @@ def _register_slirn_api(
         # REQ-20261017-162：直接回可播放的 file_url（/slirn/api/short_video_file）。
         # 前端此前自拼 /gradio_api/file= 只服务经 Gradio 上传的文件 → 磁盘产物 403 黑屏。
         _fname = Path(res["preview_path"]).name
+        # REQ-20261030-012：预览/导出按参数区当前值渲染；若有更新的识别结果
+        # 还没填充到参数区，提示去点「✅ 填充到参数区域」
+        if res.get("pending_fill"):
+            _toast = ("🎬 预览已生成（按参数区当前值渲染）；⚠️ 有更新的识别结果"
+                      "还没填充到参数区 —— 点「✅ 填充到参数区域」后再预览")
+        else:
+            _toast = "🎬 预览已生成（按参数区当前值渲染）"
         return _ok("", preview_path=res["preview_path"], size=res["size"],
                    file_url=_sv_ui._file_url(tid, pid, "stage6", _fname),
-                   index=res["index"], toast="🎬 预览已生成")
+                   index=res["index"], toast=_toast)
 
     @app.app.post("/slirn/api/short_video_stage6_cover_export")
     async def short_video_stage6_cover_export(body: dict = Body(default_factory=dict)):
@@ -9358,8 +9557,12 @@ def _register_slirn_api(
             return _err(f"Stage 7 AI 布局失败: {e}")
         n = len(out["result"]["regions"])
         src = out["result"].get("source") or "llm"
-        toast = (f"🤖 AI 识别出 {n} 个区域，布局已应用"
-                 if src == "llm" else "⚠️ LLM 不可用，已应用默认布局")
+        # REQ-20261030-012：分析不再自动写入参数区（避免覆盖用户已有参数），
+        # 结果只落 ai_layout_result 供展示；写入要用户点「✅ 填充到参数区域」
+        toast = (f"🤖 AI 识别出 {n} 个区域，点「✅ 填充到参数区域」应用到参数区"
+                 f"（不会自动改动现有参数）"
+                 if src == "llm" else
+                 "⚠️ LLM 不可用，已生成默认布局，点「✅ 填充到参数区域」应用")
         return _ok("", layout=out["layout"], result=out["result"], toast=toast)
 
     # ---- BGM 选择（复用长视频 _get_default_bgms 助手） ----

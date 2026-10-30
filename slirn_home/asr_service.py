@@ -469,12 +469,29 @@ def start_job(
 
 
 def load_subtitle(outputs_dir: Path) -> dict | None:
-    """读取 subtitle.json（无/损坏 → None）。"""
+    """读取 subtitle.json（无/损坏 → None）。
+
+    REQ-20261030-015：mtime+size 键控的解析缓存 —— subtitle.json 数 MB、
+    一次工作台渲染里 5 个区域各自 load（重复 json.loads ~0.3s）。
+    ⚠️ 返回的是**共享缓存对象**：调用方只读，不得原地修改（全仓调用方
+    均只读，已扫描确认；写盘走 save_subtitle → mtime 变 → 缓存自动失效）。
+    """
     p = Path(outputs_dir) / SUBTITLE_JSON
-    if not p.exists():
-        return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        st = p.stat()
+    except OSError:
+        _SUBTITLE_CACHE.pop(str(p), None)
+        return None
+    hit = _SUBTITLE_CACHE.get(str(p))
+    if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+        return hit[2]
+    try:
+        obj = json.loads(p.read_text(encoding="utf-8"))
     except Exception as e:  # noqa: BLE001
         log.warning("subtitle.json 损坏: %s", e)
         return None
+    _SUBTITLE_CACHE[str(p)] = (st.st_mtime_ns, st.st_size, obj)
+    return obj
+
+
+_SUBTITLE_CACHE: dict[str, tuple[int, int, dict]] = {}

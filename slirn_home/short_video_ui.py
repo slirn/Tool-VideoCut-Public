@@ -75,25 +75,36 @@ def _parse_srt_entries(srt_text: str) -> list[dict]:
     return entries
 
 
-def _render_srt_preview(srt_path: str) -> str:
-    """渲染 SRT 预览面板（直接内联在 Stage 2 卡片下方，全部条目）。
+# REQ-20261030-017：SRT 预览每页行数。
+# 2 小时视频的 raw.srt 有 2900 条，全量内联进 HTML 是 800KB（行标记开销远
+# 大于文本本身）—— 外网带宽下光这一个预览就要好几秒。改成按页取：首屏只带
+# 一页，用户点「加载更多」再续（完整内容仍可看，也保留 raw.srt 下载）。
+_SRT_PREVIEW_PAGE = 200
 
-    SRT 读不到/解析失败时返回空串（不影响卡片）。
-    """
+
+def _srt_read_entries(srt_path: str) -> list[dict]:
+    """读 SRT 并解析成条目（读不到 → 空列表）。"""
     if not srt_path:
-        return ""
+        return []
     try:
         text = Path(srt_path).read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
-        return ""
-    entries = _parse_srt_entries(text)
-    if not entries:
-        return ""
+        return []
+    return _parse_srt_entries(text)
+
+
+def _srt_rows_html(entries: list[dict], offset: int, limit: int) -> tuple:
+    """渲染一页 SRT 行 + 「加载更多」按钮。
+
+    返回 (rows_html, more_html, total, shown_to) —— more_html 是「还有 N 行」
+    的加载按钮（没有更多时为空串）。
+    """
     total = len(entries)
-    text_chars = sum(len(e["text"]) for e in entries)
-    shown = entries
+    offset = max(0, int(offset or 0))
+    limit = max(1, int(limit or _SRT_PREVIEW_PAGE))
+    page = entries[offset:offset + limit]
     rows = []
-    for e in shown:
+    for e in page:
         time_range = f"{_fmt_srt_time_ms(e['start_ms'])} → {_fmt_srt_time_ms(e['end_ms'])}"
         rows.append(
             f'<div class="slirn-stage2-srt-row">'
@@ -102,13 +113,52 @@ def _render_srt_preview(srt_path: str) -> str:
             f'<span class="slirn-stage2-srt-text">{esc(e["text"])}</span>'
             f'</div>'
         )
-    summary = f'📄 字幕预览 · 共 {total} 行 / {text_chars} 字'
+    shown_to = offset + len(page)
+    more = ""
+    if shown_to < total:
+        more = (
+            f'<div class="slirn-stage2-srt-more">'
+            f'<button type="button" class="slirn-btn-mini" data-action="sv-srt-more" '
+            f'data-offset="{shown_to}" data-limit="{limit}">'
+            f'加载更多（还有 {total - shown_to} 行）</button></div>'
+        )
+    return "".join(rows), more, total, shown_to
+
+
+def _render_srt_preview(srt_path: str, *, offset: int = 0,
+                        limit: int = _SRT_PREVIEW_PAGE) -> str:
+    """渲染 SRT 预览面板（内联在 Stage 2 卡片下方，按页取）。
+
+    SRT 读不到/解析失败时返回空串（不影响卡片）。
+    """
+    entries = _srt_read_entries(srt_path)
+    if not entries:
+        return ""
+    text_chars = sum(len(e["text"]) for e in entries)
+    rows, more, total, shown_to = _srt_rows_html(entries, offset, limit)
+    summary = (f'📄 字幕预览 · 共 {total} 行 / {text_chars} 字'
+               f'（已显示 {shown_to} 行）')
     return (
         f'<div class="slirn-stage2-srt-preview" data-total="{total}">'
         f'<div class="slirn-sub-meta" style="margin-top:8px;">{summary}</div>'
-        f'<div class="slirn-stage2-srt-rows">{("".join(rows))}</div>'
+        f'<div class="slirn-stage2-srt-rows">{rows}</div>'
+        f'{more}'
         f'</div>'
     )
+
+
+def render_srt_preview_page(srt_path: str, *, offset: int = 0,
+                             limit: int = _SRT_PREVIEW_PAGE) -> dict:
+    """SRT 预览「加载更多」的分页数据（供 /sv_srt_preview 端点用）。
+
+    html = 追加到 .slirn-stage2-srt-rows 的行块（含新的「加载更多」按钮）。
+    """
+    entries = _srt_read_entries(srt_path)
+    rows, more, total, shown_to = _srt_rows_html(entries, offset, limit)
+    return {"html": rows + more, "rows_html": rows, "more_html": more,
+            "total": total, "shown_to": shown_to,
+            "offset": max(0, int(offset or 0)),
+            "limit": max(1, int(limit or _SRT_PREVIEW_PAGE))}
 
 
 def _file_url(task_id: str, project_id: str, kind: str, name: str) -> str:
@@ -1603,14 +1653,19 @@ def _stage6_fine(project: dict) -> str:
         _det_color_txt = (f"基准色 RGB({_det_color[0]},{_det_color[1]},{_det_color[2]})"
                           + ("（透明/抠图区）" if det.get("transparent_base") else ""))
     # REQ-20261018-170：AI 识别结果卡（params.ai_layout_result，检测区下方渲染）
+    from . import short_video_bg_detect as _sv_bg
     ai_res = p.get("ai_layout_result")
     ai_res = ai_res if isinstance(ai_res, dict) else {}
     _ai_regions = [r for r in (ai_res.get("regions") or [])
                    if isinstance(r, dict)]
+    # REQ-20261030-012：分析只出结果，不写参数区 —— 结果卡要能区分
+    # 「已写入参数区」（用户点过填充）/「尚未写入」（还要手动点填充）
+    _ai_applied = _sv_bg.is_result_applied(ai_res, layout)
     _ai_rows = [f'<span class="slirn-fine-bg-detect-key">🤖 AI 识别结果</span>'
                 f'<span class="slirn-fine-bg-detect-val">{len(_ai_regions)} 个区域 · '
                 f'{esc(str(ai_res.get("detected_at") or "—"))}'
                 + (' · ⚠️ LLM 兜底默认' if ai_res.get("source") == "fallback" else '')
+                + (' · ✅ 已写入参数区' if _ai_applied else '')
                 + '</span>']
     for _r in _ai_regions:
         _extra = str(_r.get("purpose") or _r.get("reason") or "").strip()
@@ -1619,9 +1674,19 @@ def _stage6_fine(project: dict) -> str:
             f'<span class="slirn-fine-bg-detect-val">({_r.get("x")}, {_r.get("y")}) '
             f'{_r.get("w")} × {_r.get("h")}'
             + (f' · {esc(_extra)}' if _extra else '') + '</span>')
+    if _ai_applied:
+        _ai_hint = (f'识别结果<b>已写入参数区</b>'
+                     f'（{esc(str(ai_res.get("applied_at") or ""))}）；'
+                     f'再次「🤖 分析参数」后需重新点「✅ 填充到参数区域」才会更新。')
+    else:
+        _ai_hint = ('识别结果<b>尚未写入参数区</b>；'
+                    '点上方「✅ 填充到参数区域」才会应用'
+                    '（不会自动覆盖你已有的参数）。')
     ai_result_card = (
         f'<div class="slirn-fine-bg-detect-result" {"" if ai_res else "hidden"}>'
         f'<div class="slirn-fine-bg-detect-grid">{"".join(_ai_rows)}</div>'
+        # REQ-20261030-012：分析只出结果，不写参数区 —— 明确提示要手动填充
+        f'<div class="slirn-form-hint">{_ai_hint}</div>'
         f'<details style="margin:4px 0;">'
         f'<summary class="slirn-sv-muted" style="cursor:pointer;">生成的识别提示词</summary>'
         f'<pre style="white-space:pre-wrap;font-size:11px;line-height:1.5;'
@@ -1656,12 +1721,14 @@ def _stage6_fine(project: dict) -> str:
         f'<button class="slirn-btn-mini slirn-sv-detect-action slirn-sv-detect-action-ai" '
         f'data-action="sv-stage7-parse-layout" '
         f'title="读取背景区检测说明 → 生成识别提示词 → AI 识别说明里点名的区域，'
-        f'结果显示在下方；识别后可用「填充到参数区域」一键填入">🤖 分析参数</button>'
+        f'结果显示在下方；只出结果、不动参数区（不会覆盖你已有的参数），'
+        f'要写入参数区请点「✅ 填充到参数区域」">🤖 分析参数</button>'
         f'<button class="slirn-btn-mini slirn-sv-detect-action slirn-sv-detect-action-fill" '
         f'data-action="sv-stage7-apply-detected" '
         f'title="按识别结果的区域类型，把坐标填充到下方参数区对应的区域组'
         f'（视频/字幕/背景/封面）；无 AI 结果时用像素检测区域填充视频区域；'
-        f'填充后退出自动适配">✅ 填充到参数区域</button>'
+        f'只覆盖这些组的坐标（X/Y/宽/高），组内其它设置保留；'
+        f'这是唯一写入参数区的入口 ——「🤖 分析参数」只出结果，不会自动写入">✅ 填充到参数区域</button>'
         f'</div>'
         f'<div class="slirn-fine-bg-detect-controls">'
         f'<span class="slirn-fine-actions-label">算法</span>'
@@ -1805,11 +1872,24 @@ def _stage6_fine(project: dict) -> str:
             + _xy_inner(mat_key, icon, name, d, extra_ctrl, extra_label)
             + '</div>'
         )
-    # REQ-20261018-189：去掉「适配方式」选择 —— 视频区域固定语义：截取的
-    # 视频自动适应区域的宽度和高度（渲染时铺满区域矩形），X/Y/宽/高即显示区
+    # REQ-20261029-010：「适配方式」改为复选框 —— 勾选 = 截取的视频拉伸
+    # 铺满视频区域的宽高（REQ-20261018-189 起的固定语义，保持向后兼容）；
+    # 不勾选 = **宽度优先**：先把截取视频的宽度适配到视频区域的宽度，
+    # 高度按截取视频自身的宽高比自动算出（不变形、不用背景补边；高度可能
+    # 超出区域高度，此时在区域内居中）。键 = layout.video.video_fit
+    # （默认 True）。
+    _video_fit_on = bool((layout.get("video") or {}).get("video_fit", True))
     fit_hint = (
-        '<span style="font-size:11.5px;color:#64748b;">'
-        '把截取的视频自动适应视频区域的宽度和高度</span>'
+        f'<div class="slirn-fine-fit-ctrl">'
+        f'<label class="slirn-fine-fit-label">'
+        f'<input type="checkbox" class="slirn-sv-video-fit" '
+        f'data-key="video.video_fit" {"checked" if _video_fit_on else ""}> '
+        f'铺满视频区域</label>'
+        f'<span class="slirn-fine-fit-hint">'
+        f'勾选 = 拉伸铺满视频区域的宽高；不勾选 = 优先适配视频区域的宽度，'
+        f'高度按截取视频的宽高比自动计算（不变形、不用背景补边）'
+        f'</span>'
+        f'</div>'
     )
     bg_xy_block = _xy_block("bg", "🎨", "背景区域", layout.get("bg"))
 
@@ -2658,8 +2738,88 @@ def _exec_logs_pane(task_id: str) -> str:
     )
 
 
+# REQ-20261030-017：短视频阶段面板键（懒渲染用）。
+# render_project 与 /slirn/api/sv_pane 端点共用同一份渲染函数 —— 避免两处
+# 渲染逻辑漂移（懒渲染拉回来的面板必须和首屏内联的那份一模一样）。
+_SV_STAGE_PANE_KEYS = ("stage1", "stage2", "stage3", "stage4", "stage5",
+                       "stage6", "logs")
+
+
+def _sv_stage_label(key: str) -> str:
+    """阶段显示名（占位壳文案用）。"""
+    for k, _num, title, _desc, _stage_key in _SV_STAGE_NAV:
+        if k == key:
+            return title
+    return "执行日志" if key == "logs" else key
+
+
+def _sv_stage_pane_content(key: str, project: dict, *, task_id: str = "",
+                           project_id: str = "",
+                           repo_root: str | Path | None = None) -> str:
+    """单个阶段面板的内容 HTML（render_project 与 sv_pane 端点共用）。
+
+    抽出来是为了懒渲染：render_project 只内联焦点阶段，其余留占位壳；
+    用户点阶段时前端 POST /slirn/api/sv_pane 只渲染那一个阶段。
+    """
+    pipeline = project.get("pipeline") or {}
+    if key == "stage1":
+        return _stage1_select_source(project)
+    if key == "stage2":
+        return _stage2_extract(project)
+    if key == "stage3":
+        return _stage3_analyze(
+            project,
+            source_url=_source_video_url(project),
+            srt_lines=(pipeline.get("stage3_analyze", {}) or {}).get("srt_lines") or [],
+        )
+    if key == "stage4":
+        return _stage4_optimize(project, task_id=task_id, project_id=project_id,
+                                 repo_root=repo_root)
+    if key == "stage5":
+        return _stage5_coarse(project)
+    if key == "stage6":
+        return _stage6_fine(project)
+    if key == "logs":
+        return _exec_logs_pane(task_id)
+    return ""
+
+
+def _sv_lazy_shell(key: str) -> str:
+    """懒面板占位壳（点阶段时才真正渲染内容）。
+
+    壳里带一个「重新加载」按钮 —— 外网偶发失败时用户能手动重试，不必刷新整页。
+    """
+    label = _sv_stage_label(key)
+    return (
+        f'<div class="slirn-sv-pane-lazy" data-sv-lazy-shell="1">'
+        f'<span class="slirn-sv-pane-lazy-icon">⏳</span>'
+        f'<span class="slirn-sv-pane-lazy-text">「{esc(label)}」尚未加载</span>'
+        f'<button type="button" class="slirn-btn-mini" data-action="sv-pane-reload" '
+        f'data-stage-key="{esc(key)}">加载</button>'
+        f'</div>'
+    )
+
+
+def render_stage_pane(key: str, project: dict, *,
+                      repo_root: str | Path | None = None) -> str:
+    """对外：渲染单个阶段面板内容（/slirn/api/sv_pane 端点用）。"""
+    if key not in _SV_STAGE_PANE_KEYS:
+        raise ValueError(f"未知阶段面板: {key}")
+    task_id = str(project.get("task_id") or "")
+    project_id = str(project.get("id") or "")
+    p = project
+    if repo_root is not None:
+        # 注入到 project 副本（不污染原对象），下游 stage 渲染可读
+        p = dict(project)
+        p["_repo_root"] = str(repo_root)
+    return _sv_stage_pane_content(key, p, task_id=task_id, project_id=project_id,
+                                  repo_root=repo_root)
+
+
 def render_project(project: dict, all_tasks: list[dict] | None = None,
-                    *, repo_root: str | Path | None = None) -> str:
+                    *, repo_root: str | Path | None = None,
+                    lazy: bool = True,
+                    focus_key: str | None = None) -> str:
     task_id = str(project.get("task_id") or "")
     project_id = str(project.get("id") or "")
     pipeline = project.get("pipeline") or {}
@@ -2671,7 +2831,7 @@ def render_project(project: dict, all_tasks: list[dict] | None = None,
         key: _stage_nav_state((pipeline.get(stage_key) or {}).get("status"))
         for key, _num, _title, _desc, stage_key in _SV_STAGE_NAV
     }
-    focus_key = next(
+    focus_key = focus_key or next(
         (key for key, _num, _title, _desc, _stage_key in _SV_STAGE_NAV
          if stage_states[key] != "done"),
         _SV_STAGE_NAV[-1][0],
@@ -2692,28 +2852,27 @@ def render_project(project: dict, all_tasks: list[dict] | None = None,
             f'<span class="slirn-sv-stage-copy"><strong>{esc(title)}</strong>'
             f'<small>{esc(desc)}</small></span></button>'
         )
-    panes = (
-        ("stage1", _stage1_select_source(project)),
-        ("stage2", _stage2_extract(project)),
-        ("stage3", _stage3_analyze(
-            project,
-            source_url=_source_video_url(project),
-            srt_lines=(pipeline.get("stage3_analyze", {}) or {}).get("srt_lines") or [],
-        )),
-        ("stage4", _stage4_optimize(
-            project, task_id=task_id, project_id=project_id,
-            repo_root=project.get("_repo_root"),
-        )),
-        ("stage5", _stage5_coarse(project)),
-        ("stage6", _stage6_fine(project)),
-        # REQ-20261022-144：执行日志面板（非流水线阶段；由 short_video.js 填充）
-        ("logs", _exec_logs_pane(task_id)),
-    )
-    pane_html = "".join(
-        f'<section class="slirn-sv-stage-pane{" active" if key == focus_key else ""}" '
-        f'id="slirn-sv-stage-pane-{esc(key)}" data-stage-key="{esc(key)}">{content}</section>'
-        for key, content in panes
-    )
+    # REQ-20261030-017：懒渲染 —— 只内联焦点阶段，其余留占位壳（点阶段时前端
+    # POST /slirn/api/sv_pane 单独拉）。短视频首屏原本一次性渲染 7 个阶段
+    # （实测大项目 1.25MB：stage2 内联整份 SRT 801KB + stage4 356KB），
+    # 外网带宽下进项目页要等好几秒。
+    pane_parts = []
+    for key in _SV_STAGE_PANE_KEYS:
+        is_focus = (key == focus_key)
+        if lazy and not is_focus and key != "logs":
+            body = _sv_lazy_shell(key)
+            lazy_attr = ' data-sv-lazy="1"'
+        else:
+            body = _sv_stage_pane_content(
+                key, project, task_id=task_id, project_id=project_id,
+                repo_root=project.get("_repo_root"))
+            lazy_attr = ''
+        pane_parts.append(
+            f'<section class="slirn-sv-stage-pane{" active" if is_focus else ""}" '
+            f'id="slirn-sv-stage-pane-{esc(key)}" '
+            f'data-stage-key="{esc(key)}"{lazy_attr}>{body}</section>'
+        )
+    pane_html = "".join(pane_parts)
     return f'''<div id="slirn-short-video-inner" class="slirn-tab-inner"
   data-task-id="{esc(task_id)}" data-project-id="{esc(project_id)}">
   <div class="slirn-sv-header">

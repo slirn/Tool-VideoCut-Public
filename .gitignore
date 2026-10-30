@@ -25,6 +25,8 @@ downloads/
 # 临时文件与日志
 .temp/
 *.log
+.coverage
+.coverage.*
 
 # 测试与验证工具（内部 QA 用，不随公开仓库分发）
 tests/

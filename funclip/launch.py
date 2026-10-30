@@ -104,6 +104,9 @@ if __name__ == "__main__":
             # REQ-20260926-NNN：Gradio 6 launch() 重建 self.app 会丢 middleware，必须重挂
             _install_auth(slirn_app.app, _auth,
                           task_access=_slirn_task_access(_mgr, _auth))
+            # REQ-20261030-015：/slirn/api JSON 响应 gzip（工作台 HTML 13MB→~1MB）
+            from slirn_home.gzip_mw import install_gzip_middleware as _install_gz
+            _install_gz(slirn_app.app)
             print(f"[slirn] custom /slirn/api/* routes re-registered on live app", flush=True)
             # 2026-10-28：清理「孤儿 running」执行记录 —— 服务重启时正在跑的
             # job 被杀，其 record_start 已落盘但 record_finish 永远不会来，
@@ -148,6 +151,9 @@ if __name__ == "__main__":
                 _register_slirn_api(slirn_app, _mgr, _find_root(), _auth)
                 _install_auth(slirn_app.app, _auth,
                               task_access=_slirn_task_access(_mgr, _auth))
+                # REQ-20261030-015：恢复路径同样挂 gzip（与成功路径一致）
+                from slirn_home.gzip_mw import install_gzip_middleware as _install_gz
+                _install_gz(slirn_app.app)
                 print(f"[slirn] custom /slirn/api/* routes re-registered (recovery path)", flush=True)
                 # REQ-20260922-NNN-b：恢复路径同样回写实际端口（见上方成功路径注释）
                 _live_port = getattr(slirn_app, "server_port", None)

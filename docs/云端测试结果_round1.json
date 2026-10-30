@@ -1,0 +1,2776 @@
+{
+  "meta": {
+    "tag": "round1",
+    "base": "http://129.211.13.125:47322",
+    "started_at": "2026-10-30T20:37:02",
+    "account": "lo***",
+    "mode": "只读黑盒（浏览器）",
+    "total_ms": 109672,
+    "finished_at": "2026-10-30T20:38:52",
+    "summary": {
+      "pass": 15,
+      "fail": 0,
+      "skip": 0,
+      "na": 0,
+      "js_errors": 0
+    }
+  },
+  "checks": [
+    {
+      "id": "login",
+      "group": "认证",
+      "name": "登录页 + 账号登录",
+      "status": "PASS",
+      "ms": 6863,
+      "detail": "登录成功"
+    },
+    {
+      "id": "home",
+      "group": "页面",
+      "name": "首页 dashboard",
+      "status": "PASS",
+      "ms": 5032,
+      "detail": "渲染 266 字符"
+    },
+    {
+      "id": "nav-tasks",
+      "group": "页面",
+      "name": "导航页 tasks",
+      "status": "PASS",
+      "ms": 2591,
+      "detail": "渲染 264 字符 · 2587ms"
+    },
+    {
+      "id": "nav-create",
+      "group": "页面",
+      "name": "导航页 create",
+      "status": "PASS",
+      "ms": 2595,
+      "detail": "渲染 359 字符 · 2591ms"
+    },
+    {
+      "id": "nav-hotwords",
+      "group": "页面",
+      "name": "导航页 hotwords",
+      "status": "PASS",
+      "ms": 3176,
+      "detail": "渲染 115 字符 · 3172ms"
+    },
+    {
+      "id": "nav-usage",
+      "group": "页面",
+      "name": "导航页 usage",
+      "status": "PASS",
+      "ms": 2569,
+      "detail": "渲染 3276 字符 · 2566ms"
+    },
+    {
+      "id": "nav-shortvideo",
+      "group": "页面",
+      "name": "导航页 shortvideo",
+      "status": "PASS",
+      "ms": 2565,
+      "detail": "渲染 210 字符 · 2562ms"
+    },
+    {
+      "id": "wb-tasks",
+      "group": "长视频",
+      "name": "任务列表读取",
+      "status": "PASS",
+      "ms": 2544,
+      "detail": "任务 2 个 · 首个 20261027-002"
+    },
+    {
+      "id": "wb-open",
+      "group": "长视频",
+      "name": "工作台打开（首个任务）",
+      "status": "PASS",
+      "ms": 49696,
+      "detail": "8 阶段 · 懒壳 0 个 · 文本 2138 字 · 49661ms"
+    },
+    {
+      "id": "sv-list",
+      "group": "短视频",
+      "name": "短视频项目列表",
+      "status": "PASS",
+      "ms": 11036,
+      "detail": "项目 1 个"
+    },
+    {
+      "id": "sv-open",
+      "group": "短视频",
+      "name": "项目页打开（首个项目）",
+      "status": "PASS",
+      "ms": 18628,
+      "detail": "7 阶段（可见 1）· 懒壳 0 · 已渲染 6 · 文本 5018 字 · 18614ms"
+    },
+    {
+      "id": "wb-payload",
+      "group": "性能",
+      "name": "工作台 API 响应体体积",
+      "status": "PASS",
+      "ms": 0,
+      "detail": "24 个接口共 13.51MB · 最大 workbench 13.48MB · 40936ms · 明文"
+    },
+    {
+      "id": "help-menu",
+      "group": "页面",
+      "name": "帮助菜单",
+      "status": "PASS",
+      "ms": 26,
+      "detail": "打开，5 个入口"
+    },
+    {
+      "id": "routes",
+      "group": "服务",
+      "name": "版本标记端点探测",
+      "status": "PASS",
+      "ms": 591,
+      "detail": "已有 2 个 · 缺失 wb_pane,sv_pane,sv_srt_preview,review_proxy_status · 591ms"
+    },
+    {
+      "id": "gzip",
+      "group": "性能",
+      "name": "首页 gzip 实效",
+      "status": "PASS",
+      "ms": 962,
+      "detail": "未压缩 · 明文 287KB 线上 287KB · 拉取 961ms"
+    }
+  ],
+  "pages": [
+    {
+      "name": "home",
+      "wall_ms": 5026,
+      "nav": {
+        "ttfb_ms": 108,
+        "dcl_ms": 1005,
+        "load_ms": 1006,
+        "doc_transfer": 293970
+      },
+      "at": "2026-10-30T20:37:15"
+    },
+    {
+      "name": "goto-tasks",
+      "wall_ms": 2587,
+      "nav": {
+        "ttfb_ms": 108,
+        "dcl_ms": 1005,
+        "load_ms": 1006,
+        "doc_transfer": 293970
+      },
+      "at": "2026-10-30T20:37:17"
+    },
+    {
+      "name": "goto-create",
+      "wall_ms": 2591,
+      "nav": {
+        "ttfb_ms": 108,
+        "dcl_ms": 1005,
+        "load_ms": 1006,
+        "doc_transfer": 293970
+      },
+      "at": "2026-10-30T20:37:20"
+    },
+    {
+      "name": "goto-hotwords",
+      "wall_ms": 3172,
+      "nav": {
+        "ttfb_ms": 108,
+        "dcl_ms": 1005,
+        "load_ms": 1006,
+        "doc_transfer": 293970
+      },
+      "at": "2026-10-30T20:37:23"
+    },
+    {
+      "name": "goto-usage",
+      "wall_ms": 2566,
+      "nav": {
+        "ttfb_ms": 108,
+        "dcl_ms": 1005,
+        "load_ms": 1006,
+        "doc_transfer": 293970
+      },
+      "at": "2026-10-30T20:37:26"
+    },
+    {
+      "name": "goto-short-video",
+      "wall_ms": 2562,
+      "nav": {
+        "ttfb_ms": 108,
+        "dcl_ms": 1005,
+        "load_ms": 1006,
+        "doc_transfer": 293970
+      },
+      "at": "2026-10-30T20:37:28"
+    },
+    {
+      "name": "workbench",
+      "wall_ms": 49661,
+      "nav": {
+        "ttfb_ms": 108,
+        "dcl_ms": 1005,
+        "load_ms": 1006,
+        "doc_transfer": 293970
+      },
+      "at": "2026-10-30T20:38:20"
+    },
+    {
+      "name": "sv-project",
+      "wall_ms": 18614,
+      "nav": {
+        "ttfb_ms": 133,
+        "dcl_ms": 524,
+        "load_ms": 525,
+        "doc_transfer": 293970
+      },
+      "at": "2026-10-30T20:38:50"
+    }
+  ],
+  "net": [
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/",
+      "status": 200,
+      "ms": 997,
+      "bytes": 293807,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/static/js/iframeResizer.contentWindow.min.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/index-CTFdGFMX.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/index-BMxruX6a.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Index-B3d_XLDE.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/i18n-Cp0K4Pzb.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/i18n-Beyw3yas.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/index-FEBXxUKr.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/StreamingBar.svelte_svelte_type_style_lang-BttMSefY.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/html-B68ok-Uj.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/ScrollFade.svelte_svelte_type_style_lang-CIUw7O4r.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/snippet-RHfhCkJt.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/ScrollFade-DV-0xzhB.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/index-B_pwUImq.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/StreamingBar-CMuqaV2j.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Clear-Dgxiu6kK.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Index-CI7BqPz-.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/index-DT-PGBOg.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/index-tFQomdd2.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/zh-CN-D4oMFiss.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/theme.css?v=1a3e83f71ed7438c1a85749e1d40a397e1ca5bf0281fbbd33168f9dd246233d1",
+      "status": 200,
+      "ms": 72,
+      "bytes": 2746,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Blocks-IWJfIfJH.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/size-DEWon29f.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/state.svelte-C4lCeSea.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Blocks-CXVCGwNW.css",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/favicon.ico",
+      "status": 200,
+      "ms": 4,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Index-BhLururM.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Index.svelte_svelte_type_style_lang-Da1LdqrJ.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Index-BDcHJDzf.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Index-Rgvzc5GT.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/HTML-DJQcINw8.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/HTML-CCquOCqP.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Block-B-n9miFg.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/BlockLabel-febq4APZ.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Code-b-PX2aui.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/IconButtonWrapper-KllrYESz.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Example-CYGKl8mO.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Example-BG5zdIqX.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Index-5RnUXY9l.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Index-KMnTXpry.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/BaseForm-DJO9AQ5k.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/BaseForm-DJxyhkeW.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Index-CAFud68R.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Textbox-Bh0X9fr3.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/actions-CSqFQeLv.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/input-BMtvcw5i.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/BlockTitle-Ct8PfQXk.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Info-DcY7SvRJ.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Check-ylDjh7z0.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Copy-D6HpUGG9.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Send-zrza6h7P.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Square-F8aUyydx.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Textbox-B5AH0EoL.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Example-BGJgZPs1.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Example-Cvv6PwrD.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Index-CA0MHEOK.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Empty-gyYh_3t3.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/File-CuP3GrI8.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/FileUpload-C1RroDSh.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Upload-DLYQMC-T.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Upload-C2I0h_eD.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/DownloadLink-eqPGswQO.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/FileUpload-DiuLlPU9.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/UploadText-4eO2T4Nc.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Example-BNBAsQ_i.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Example-CbN4r5yx.css",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Index-BSRfA5yv.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Button-BbFvz1hn.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Image-FJXF3nIb.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/misc-CzpFkNpj.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Image-Da_XA0w6.css",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/Button-BZ4d-rtD.css",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/assets/ImagePreview-CCVfwC4m.css",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/slirn/static/router.js",
+      "status": 200,
+      "ms": 367,
+      "bytes": 123947,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/slirn/static/pipeline.js",
+      "status": 200,
+      "ms": 2478,
+      "bytes": 27846,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/slirn/static/short_video.js",
+      "status": 200,
+      "ms": 1639,
+      "bytes": 49061,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/slirn/static/short_video_flow.js",
+      "status": 200,
+      "ms": 1083,
+      "bytes": 6745,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/slirn/static/hardware_keys.js",
+      "status": 200,
+      "ms": 399,
+      "bytes": 4788,
+      "encoding": "gzip"
+    },
+    {
+      "page": "home",
+      "method": "GET",
+      "path": "/slirn/api/auth/me",
+      "status": 200,
+      "ms": 77,
+      "bytes": 207,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "POST",
+      "path": "/slirn/api/refresh_tasks",
+      "status": 200,
+      "ms": 377,
+      "bytes": 4022,
+      "encoding": ""
+    },
+    {
+      "page": "home",
+      "method": "POST",
+      "path": "/slirn/api/dashboard",
+      "status": 200,
+      "ms": 122,
+      "bytes": 3836,
+      "encoding": ""
+    },
+    {
+      "page": "goto-usage",
+      "method": "POST",
+      "path": "/slirn/api/llm_usage",
+      "status": 200,
+      "ms": 105,
+      "bytes": 1117,
+      "encoding": ""
+    },
+    {
+      "page": "goto-usage",
+      "method": "POST",
+      "path": "/slirn/api/llm_usage_log",
+      "status": 200,
+      "ms": 132,
+      "bytes": 9177,
+      "encoding": ""
+    },
+    {
+      "page": "goto-usage",
+      "method": "GET",
+      "path": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNSIgdmlld0JveD0iMCAwIDI0IDI0Ij48cGF0aCBmaWxsPSJXaW5kb3dUZXh0IiBkPSJNMjAgM2",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "goto-short-video",
+      "method": "POST",
+      "path": "/slirn/api/short_video_list",
+      "status": 200,
+      "ms": 72,
+      "bytes": 2646,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/workbench",
+      "status": 200,
+      "ms": 40936,
+      "bytes": 14133261,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/favicon.ico",
+      "status": 200,
+      "ms": 18,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/list_default_bgms",
+      "status": 200,
+      "ms": 152,
+      "bytes": 1024,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/pipeline_get",
+      "status": 200,
+      "ms": 156,
+      "bytes": 3518,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/compose_rough_status",
+      "status": 200,
+      "ms": 1249,
+      "bytes": 298,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/pipeline_get",
+      "status": 200,
+      "ms": 1474,
+      "bytes": 3518,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/slirn/api/video/20261027-002?src=rough_compose",
+      "status": 206,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/pipeline_get",
+      "status": 200,
+      "ms": 1441,
+      "bytes": 3518,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/pipeline_get",
+      "status": 200,
+      "ms": 1100,
+      "bytes": 3518,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/list_flow_profiles",
+      "status": 200,
+      "ms": 1175,
+      "bytes": 272,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/list_fine_global_profiles",
+      "status": 200,
+      "ms": 2202,
+      "bytes": 272,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/slirn/api/active_export_for_task?task_id=20261027-002",
+      "status": 200,
+      "ms": 2150,
+      "bytes": 157,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/list_flow_profiles",
+      "status": 200,
+      "ms": 1055,
+      "bytes": 272,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/list_fine_global_profiles",
+      "status": 200,
+      "ms": 1057,
+      "bytes": 272,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/slirn/api/active_export_for_task?task_id=20261027-002",
+      "status": 200,
+      "ms": 1787,
+      "bytes": 157,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/list_flow_profiles",
+      "status": 200,
+      "ms": 1190,
+      "bytes": 272,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/list_fine_global_profiles",
+      "status": 200,
+      "ms": 1591,
+      "bytes": 272,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/slirn/api/active_export_for_task?task_id=20261027-002",
+      "status": 200,
+      "ms": 2387,
+      "bytes": 157,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/list_flow_profiles",
+      "status": 200,
+      "ms": 1475,
+      "bytes": 272,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/list_fine_global_profiles",
+      "status": 200,
+      "ms": 1473,
+      "bytes": 272,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/slirn/api/active_export_for_task?task_id=20261027-002",
+      "status": 200,
+      "ms": 3111,
+      "bytes": 157,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/",
+      "status": 200,
+      "ms": 3951,
+      "bytes": 293807,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/static/js/iframeResizer.contentWindow.min.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/index-CTFdGFMX.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/index-BMxruX6a.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Index-B3d_XLDE.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/i18n-Cp0K4Pzb.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/i18n-Beyw3yas.css",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/index-FEBXxUKr.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/StreamingBar.svelte_svelte_type_style_lang-BttMSefY.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/html-B68ok-Uj.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/ScrollFade.svelte_svelte_type_style_lang-CIUw7O4r.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/snippet-RHfhCkJt.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/ScrollFade-DV-0xzhB.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/index-B_pwUImq.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/StreamingBar-CMuqaV2j.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Clear-Dgxiu6kK.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Index-CI7BqPz-.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/index-DT-PGBOg.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/index-tFQomdd2.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/zh-CN-D4oMFiss.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/theme.css?v=1a3e83f71ed7438c1a85749e1d40a397e1ca5bf0281fbbd33168f9dd246233d1",
+      "status": 200,
+      "ms": 79,
+      "bytes": 2746,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Blocks-IWJfIfJH.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/size-DEWon29f.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/state.svelte-C4lCeSea.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Blocks-CXVCGwNW.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/favicon.ico",
+      "status": 200,
+      "ms": 3,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Index-BhLururM.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Index.svelte_svelte_type_style_lang-Da1LdqrJ.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Index-BDcHJDzf.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Index-Rgvzc5GT.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/HTML-DJQcINw8.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/HTML-CCquOCqP.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Block-B-n9miFg.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/BlockLabel-febq4APZ.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Code-b-PX2aui.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/IconButtonWrapper-KllrYESz.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Example-CYGKl8mO.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Example-BG5zdIqX.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Index-5RnUXY9l.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Index-KMnTXpry.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/BaseForm-DJO9AQ5k.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/BaseForm-DJxyhkeW.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Index-CAFud68R.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Textbox-Bh0X9fr3.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/actions-CSqFQeLv.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/input-BMtvcw5i.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/BlockTitle-Ct8PfQXk.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Info-DcY7SvRJ.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Check-ylDjh7z0.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Copy-D6HpUGG9.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Send-zrza6h7P.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Square-F8aUyydx.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Textbox-B5AH0EoL.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Example-BGJgZPs1.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Example-Cvv6PwrD.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Index-CA0MHEOK.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Empty-gyYh_3t3.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/File-CuP3GrI8.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/FileUpload-C1RroDSh.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Upload-DLYQMC-T.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Upload-C2I0h_eD.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/DownloadLink-eqPGswQO.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/FileUpload-DiuLlPU9.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/UploadText-4eO2T4Nc.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Example-BNBAsQ_i.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Example-CbN4r5yx.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Index-BSRfA5yv.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Button-BbFvz1hn.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Image-FJXF3nIb.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/misc-CzpFkNpj.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Image-Da_XA0w6.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/Button-BZ4d-rtD.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/assets/ImagePreview-CCVfwC4m.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/slirn/static/router.js",
+      "status": 200,
+      "ms": 313,
+      "bytes": 123947,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/slirn/static/pipeline.js",
+      "status": 200,
+      "ms": 212,
+      "bytes": 27846,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/slirn/static/short_video.js",
+      "status": 200,
+      "ms": 235,
+      "bytes": 49061,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/slirn/static/short_video_flow.js",
+      "status": 200,
+      "ms": 150,
+      "bytes": 6745,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/slirn/static/hardware_keys.js",
+      "status": 200,
+      "ms": 144,
+      "bytes": 4788,
+      "encoding": "gzip"
+    },
+    {
+      "page": "workbench",
+      "method": "GET",
+      "path": "/slirn/api/auth/me",
+      "status": 200,
+      "ms": 74,
+      "bytes": 207,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/refresh_tasks",
+      "status": 200,
+      "ms": 78,
+      "bytes": 4022,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/dashboard",
+      "status": 200,
+      "ms": 74,
+      "bytes": 3836,
+      "encoding": ""
+    },
+    {
+      "page": "workbench",
+      "method": "POST",
+      "path": "/slirn/api/short_video_list",
+      "status": 200,
+      "ms": 77,
+      "bytes": 2646,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/",
+      "status": 200,
+      "ms": 520,
+      "bytes": 293807,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/static/js/iframeResizer.contentWindow.min.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/index-CTFdGFMX.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/index-BMxruX6a.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Index-B3d_XLDE.js",
+      "status": 200,
+      "ms": 2,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/i18n-Cp0K4Pzb.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/i18n-Beyw3yas.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/index-FEBXxUKr.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/StreamingBar.svelte_svelte_type_style_lang-BttMSefY.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/html-B68ok-Uj.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/ScrollFade.svelte_svelte_type_style_lang-CIUw7O4r.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/snippet-RHfhCkJt.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/ScrollFade-DV-0xzhB.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/index-B_pwUImq.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/StreamingBar-CMuqaV2j.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Clear-Dgxiu6kK.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Index-CI7BqPz-.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/index-DT-PGBOg.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/index-tFQomdd2.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/zh-CN-D4oMFiss.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/theme.css?v=1a3e83f71ed7438c1a85749e1d40a397e1ca5bf0281fbbd33168f9dd246233d1",
+      "status": 200,
+      "ms": 79,
+      "bytes": 2746,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Blocks-IWJfIfJH.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/size-DEWon29f.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/state.svelte-C4lCeSea.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Blocks-CXVCGwNW.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/favicon.ico",
+      "status": 200,
+      "ms": 3,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Index-BhLururM.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Index.svelte_svelte_type_style_lang-Da1LdqrJ.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Index-BDcHJDzf.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Index-Rgvzc5GT.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/HTML-DJQcINw8.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/HTML-CCquOCqP.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Block-B-n9miFg.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/BlockLabel-febq4APZ.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Code-b-PX2aui.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/IconButtonWrapper-KllrYESz.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Example-CYGKl8mO.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Example-BG5zdIqX.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Index-5RnUXY9l.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Index-KMnTXpry.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/BaseForm-DJO9AQ5k.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/BaseForm-DJxyhkeW.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Index-CAFud68R.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Textbox-Bh0X9fr3.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/actions-CSqFQeLv.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/input-BMtvcw5i.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/BlockTitle-Ct8PfQXk.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Info-DcY7SvRJ.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Check-ylDjh7z0.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Copy-D6HpUGG9.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Send-zrza6h7P.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Square-F8aUyydx.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Textbox-B5AH0EoL.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Example-BGJgZPs1.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Example-Cvv6PwrD.css",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Index-CA0MHEOK.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Empty-gyYh_3t3.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/File-CuP3GrI8.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/FileUpload-C1RroDSh.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Upload-DLYQMC-T.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Upload-C2I0h_eD.css",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/DownloadLink-eqPGswQO.js",
+      "status": 200,
+      "ms": 1,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/FileUpload-DiuLlPU9.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/UploadText-4eO2T4Nc.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Example-BNBAsQ_i.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Example-CbN4r5yx.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Index-BSRfA5yv.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Button-BbFvz1hn.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Image-FJXF3nIb.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/misc-CzpFkNpj.js",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Image-Da_XA0w6.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/Button-BZ4d-rtD.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/assets/ImagePreview-CCVfwC4m.css",
+      "status": 200,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/slirn/static/router.js",
+      "status": 200,
+      "ms": 181,
+      "bytes": 123947,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/slirn/static/pipeline.js",
+      "status": 200,
+      "ms": 1634,
+      "bytes": 27846,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/slirn/static/short_video.js",
+      "status": 200,
+      "ms": 1879,
+      "bytes": 49061,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/slirn/static/short_video_flow.js",
+      "status": 200,
+      "ms": 1392,
+      "bytes": 6745,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/slirn/static/hardware_keys.js",
+      "status": 200,
+      "ms": 1282,
+      "bytes": 4788,
+      "encoding": "gzip"
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/slirn/api/auth/me",
+      "status": 200,
+      "ms": 268,
+      "bytes": 207,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "POST",
+      "path": "/slirn/api/refresh_tasks",
+      "status": 200,
+      "ms": 77,
+      "bytes": 4022,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "POST",
+      "path": "/slirn/api/dashboard",
+      "status": 200,
+      "ms": 456,
+      "bytes": 3836,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "POST",
+      "path": "/slirn/api/short_video_list",
+      "status": 200,
+      "ms": 75,
+      "bytes": 2646,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "POST",
+      "path": "/slirn/api/short_video_list",
+      "status": 200,
+      "ms": 72,
+      "bytes": 2646,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "POST",
+      "path": "/slirn/api/short_video_get",
+      "status": 200,
+      "ms": 4325,
+      "bytes": 1621088,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "POST",
+      "path": "/slirn/api/short_video_flow_load",
+      "status": 200,
+      "ms": 14,
+      "bytes": 1490,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "POST",
+      "path": "/slirn/api/short_video_flow_status",
+      "status": 200,
+      "ms": 72,
+      "bytes": 311,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "POST",
+      "path": "/slirn/api/short_video_flow_load",
+      "status": 200,
+      "ms": 72,
+      "bytes": 1490,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "POST",
+      "path": "/slirn/api/short_video_flow_status",
+      "status": 200,
+      "ms": 94,
+      "bytes": 311,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/slirn/api/short_video_file?task_id=20261027-002&project_id=sv_20261029_082803_f90d12&kind=material&name=mat_20261029_082803_e91b7d",
+      "status": 206,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    },
+    {
+      "page": "sv-project",
+      "method": "GET",
+      "path": "/slirn/api/short_video_file?task_id=20261027-002&project_id=sv_20261029_082803_f90d12&kind=material&name=mat_20261029_082803_e91b7d",
+      "status": 206,
+      "ms": 0,
+      "bytes": 0,
+      "encoding": ""
+    }
+  ],
+  "js_errors": [],
+  "facts": {
+    "task_count": 2,
+    "workbench": {
+      "stages": 8,
+      "lazy": 0,
+      "panes": 8,
+      "len": 2138
+    },
+    "sv_project_count": 1,
+    "sv_project": {
+      "pid": "sv_20261029_082803_f90d12",
+      "stages": 7,
+      "vis_stages": 1,
+      "lazy": 0,
+      "rendered": 6,
+      "len": 5018
+    },
+    "wb_api_total_bytes": 14162170,
+    "wb_api_max_bytes": 14133261,
+    "wb_api_max_path": "workbench",
+    "wb_api_count": 24,
+    "wb_api_max_ms": 40936,
+    "wb_api_max_encoding": "",
+    "session_cookie_used": true,
+    "version_markers_present": [
+      "pipeline_status",
+      "save_optimize_subtitle"
+    ],
+    "version_markers_absent": [
+      "wb_pane",
+      "sv_pane",
+      "sv_srt_preview",
+      "review_proxy_status"
+    ],
+    "marker_probe_control_404": true,
+    "marker_probe_ms": 591,
+    "homepage_raw_bytes": 293670,
+    "homepage_wire_bytes": 293807,
+    "homepage_gz_header": "",
+    "homepage_fetch_ms": 961
+  }
+}
