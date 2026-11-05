@@ -32,6 +32,7 @@ ensure_tasklib_importable()
 
 # REQ-20260926-NNN：用户管理 + 会话
 from slirn_home.auth import AuthStore as _AuthStore  # noqa: E402
+from slirn_home.fftools import ffprobe_bin as _ffprobe_bin  # noqa: E402 — REQ-20261105-001
 
 from tasklib import TaskManager, TaskNotFoundError, TaskStatus  # noqa: E402
 from tasklib.hotword_lib import HotwordLibrary  # noqa: E402
@@ -5796,7 +5797,7 @@ def _register_slirn_api(
             vp = _resolve_mat_abs(mgr, tid, fc_for_dur["materials"], "video")
             if vp and _P(vp).exists():
                 _pr = _sp.run(
-                    ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                    [_ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
                      "-of", "default=nw=1:nk=1", str(vp)],
                     capture_output=True, text=True, timeout=10,
                 )
@@ -10751,7 +10752,7 @@ def _register_slirn_api(
 
         # 1. 探测 audio stream 数 + duration
         rc, out, err = _run_probe([
-            "ffprobe", "-v", "error", "-select_streams", "a",
+            _ffprobe_bin(), "-v", "error", "-select_streams", "a",
             "-show_entries", "stream=index,codec_name,duration:format=duration",
             "-of", "json", str(output_abs),
         ])
@@ -10769,7 +10770,7 @@ def _register_slirn_api(
 
         # 2. volumedetect 探测 output mean_volume
         rc, out, err = _run_probe([
-            "ffprobe", "-v", "error", "-af", "volumedetect",
+            _ffprobe_bin(), "-v", "error", "-af", "volumedetect",
             "-of", "json", str(output_abs),
         ])
         mean_volume_db: float | None = None
@@ -10792,7 +10793,7 @@ def _register_slirn_api(
             bgm_abs = (task_root / bgm_rel).resolve()
             if bgm_abs.exists():
                 rc, out, err = _run_probe([
-                    "ffprobe", "-v", "error", "-af", "volumedetect",
+                    _ffprobe_bin(), "-v", "error", "-af", "volumedetect",
                     "-of", "json", str(bgm_abs),
                 ])
                 if rc == 0 and out.strip():

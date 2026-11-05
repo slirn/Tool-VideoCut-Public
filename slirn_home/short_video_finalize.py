@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from slirn_home import short_video_service as svc
+from slirn_home.fftools import ffprobe_bin as _ffprobe_bin
 
 log = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ def _resolve_cut_by_srt(repo_root: Path) -> Path:
 def _ffprobe_duration(path: Path) -> float:
     """ffprobe 读时长（秒）；失败返回 0.0。"""
     cmd = [
-        "ffprobe", "-v", "error",
+        _ffprobe_bin(), "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
         str(path),

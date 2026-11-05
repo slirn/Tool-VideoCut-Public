@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from slirn_home import short_video_service as svc
+from slirn_home.fftools import ffprobe_bin as _ffprobe_bin
 
 log = logging.getLogger(__name__)
 
@@ -362,7 +363,7 @@ def _coarse_one(
     try:
         import subprocess
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            [_ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", str(out_mp4)],
             capture_output=True, text=True, timeout=30, encoding="utf-8",
         )

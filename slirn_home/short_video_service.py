@@ -24,6 +24,8 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+from slirn_home.fftools import ffprobe_bin as _ffprobe_bin
+
 log = logging.getLogger(__name__)
 
 SHORT_VIDEO_DIR = "short_video"
@@ -283,7 +285,7 @@ def probe_media(path: Path) -> dict:
     if not path.exists():
         return result
     cmd = [
-        "ffprobe", "-v", "error",
+        _ffprobe_bin(), "-v", "error",
         "-show_entries", "format=duration:stream=codec_type,width,height,duration",
         "-of", "json", str(path),
     ]

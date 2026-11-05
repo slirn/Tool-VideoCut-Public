@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 
 # 硬件编码参数选择（探测/降级逻辑在共享模块 hw_encode，短视频混编导出同用）：
 # quality 23 对标 libx264 fast crf 23；SLIRN_FINE_HW_ENC=0 强制关闭。
+from slirn_home.fftools import ffprobe_bin as _ffprobe_bin  # noqa: E402
 from slirn_home.hw_encode import encoder_args as _fine_video_encoder_args  # noqa: E402
 
 
@@ -1669,7 +1670,7 @@ def _probe_video_duration_ms(mgr, tid: str) -> int:
         if not vp or not Path(vp).exists():
             return 0
         pr = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            [_ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
              "-of", "default=nw=1:nk=1", str(vp)],
             capture_output=True, text=True, timeout=10, encoding="utf-8",
         )
@@ -1688,7 +1689,7 @@ def _probe_video_fps(video_path: Path) -> str:
     """
     try:
         pr = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+            [_ffprobe_bin(), "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=r_frame_rate",
              "-of", "default=nw=1:nk=1", str(video_path)],
             capture_output=True, text=True, timeout=10, encoding="utf-8",
@@ -1777,7 +1778,7 @@ def _verify_render_duration(out_path: Path, expected_sec: float | None) -> str:
         return ""
     try:
         pr = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration",
+            [_ffprobe_bin(), "-v", "error", "-show_entries", "stream=codec_type,duration",
              "-of", "json", str(out_path)],
             capture_output=True, text=True, timeout=60, encoding="utf-8",
         )

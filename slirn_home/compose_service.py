@@ -37,6 +37,7 @@ import proglog  # moviepy 1.0.3 自带依赖（帧进度协议）
 
 from slirn_home import execution_history
 from slirn_home import frame_grid
+from slirn_home.fftools import ffprobe_bin as _ffprobe_bin
 
 log = logging.getLogger(__name__)
 
@@ -635,14 +636,17 @@ def compose_rough_cut(
 
 
 def _probe_duration(p: Path) -> float | None:
+    # ffprobe_bin()：PATH → ffmpeg 同目录回退（REQ-20261105-001，服务器只有
+    # ffmpeg.exe 时此前直接 FileNotFoundError 冒泡炸掉整个粗剪 job）；
+    # FileNotFoundError 是 OSError 子类，必须一并捕获按「探不到时长」降级。
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            [_ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", str(p)],
             capture_output=True, text=True, timeout=30,
         )
         return float(r.stdout.strip()) if r.returncode == 0 else None
-    except (ValueError, subprocess.TimeoutExpired):
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         return None
 
 
@@ -653,7 +657,7 @@ def _probe_av_durations(p: Path) -> tuple[float | None, float | None]:
     """
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,duration",
+            [_ffprobe_bin(), "-v", "error", "-show_entries", "stream=codec_type,duration",
              "-of", "csv=p=0", str(p)],
             capture_output=True, text=True, timeout=30,
         )
@@ -670,7 +674,7 @@ def _probe_av_durations(p: Path) -> tuple[float | None, float | None]:
                 else:
                     a = d
         return v, a
-    except subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         return None, None
 
 

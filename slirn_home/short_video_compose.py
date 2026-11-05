@@ -37,6 +37,7 @@ from typing import Any
 
 from slirn_home import short_video_service as svc
 from slirn_home import hw_encode
+from slirn_home.fftools import ffprobe_bin as _ffprobe_bin
 
 log = logging.getLogger(__name__)
 
@@ -1023,7 +1024,7 @@ def _atomic_render(spec: ComposeSpec, out_path: Path, work_dir: Path) -> float:
 def _ffprobe_duration_fallback(path: Path) -> float | None:
     try:
         proc = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+            [_ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
             capture_output=True, text=True, timeout=30)
         return float(proc.stdout.strip()) if proc.returncode == 0 else None

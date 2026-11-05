@@ -39,6 +39,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from slirn_home.fftools import ffprobe_bin as _ffprobe_bin
+
 log = logging.getLogger(__name__)
 
 # 边界回退量（秒）：trim 的 end 是开区间、start 是闭区间。snap 到帧边界后
@@ -121,7 +123,7 @@ def _parse_rate(text: str | None) -> tuple[int, int] | None:
 def _probe_grid_uncached(src: Path) -> FrameGrid | None:
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+            [_ffprobe_bin(), "-v", "error", "-select_streams", "v:0",
              "-show_entries",
              "stream=r_frame_rate,avg_frame_rate,time_base,start_time",
              "-of", "json", str(src)],

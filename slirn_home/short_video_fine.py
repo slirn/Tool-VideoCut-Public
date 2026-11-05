@@ -30,6 +30,7 @@ from typing import Any
 
 from slirn_home import short_video_compose as _sv_compose
 from slirn_home import short_video_service as svc
+from slirn_home.fftools import ffprobe_available, ffprobe_bin as _ffprobe_bin  # REQ-20261105-001
 
 log = logging.getLogger(__name__)
 
@@ -308,11 +309,13 @@ _RESOLUTIONS = {"720p", "1080p", "960x1280", "1086x1448", "1280x720",
 def _probe_video_size(abs_path) -> tuple[int, int] | None:
     """ffprobe 读视频宽高（best-effort：失败/无 ffprobe 返回 None）。"""
     p = Path(abs_path) if abs_path else Path()
-    if not p.is_file() or not shutil.which("ffprobe"):
+    # REQ-20261105-001：ffprobe_available() 覆盖「ffmpeg 同目录」回退，
+    # imageio-ffmpeg 部署（无 PATH ffprobe）也能探测
+    if not p.is_file() or not ffprobe_available():
         return None
     try:
         r = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+            [_ffprobe_bin(), "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height", "-of", "csv=p=0",
              str(p)],
             capture_output=True, text=True, timeout=10,
