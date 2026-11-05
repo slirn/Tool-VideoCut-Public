@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,7 @@ from pathlib import Path
 from typing import Callable
 
 from slirn_home import execution_history
+from slirn_home.fftools import ffprobe_bin as _ffprobe_bin
 from slirn_home.paths import find_repo_root as _find_repo_root
 
 log = logging.getLogger(__name__)
@@ -225,7 +227,7 @@ def has_audio_track(video_path: Path) -> bool:
     try:
         r = subprocess.run(
             [
-                "ffprobe",
+                _ffprobe_bin(),
                 "-v",
                 "error",
                 "-select_streams",
@@ -294,10 +296,15 @@ def _run_recognition(video_path: str, hotword_str: str, sd: bool = False) -> dic
     （REQ-20260917-023，长视频内存修复）替代 moviepy 立体声抽轨 + librosa
     重采样；识别链路（seaco-paraformer / 热词 / 断句）与上游完全同源。
 
+    SLIRN_ASR_SUBPROCESS=1 时改在独立 python 进程里跑同一条链路
+    （_run_recognition_subprocess，REQ-20261105-001）。
+
     sd=True 走上游 SD 分支：cam++ 逐句 spk 标签进 state['sentences']。
     注意上游 recog 判 sd_switch == 'Yes'（大写 Y），传小写 'yes' 会静默
     走普通分支（skill 脚本 extract_subtitle.py 即中招，见 REQ-20260917-029 非目标）。
     """
+    if _env_flag(_SUBPROCESS_ENV):
+        return _run_recognition_subprocess(video_path, hotword_str, sd)
     import librosa  # 上游 videoclipper 同款依赖；懒加载保持服务启动轻量
 
     from funclip.videoclipper import VideoClipper
@@ -317,6 +324,59 @@ def _run_recognition(video_path: str, hotword_str: str, sd: bool = False) -> dic
         None,
     )
     return state
+
+
+# =============== 子进程识别（REQ-20261105-001，默认关闭） ===============
+
+# SLIRN_ASR_SUBPROCESS=1 时识别在独立 python 进程里跑：主进程不再 import
+# torch/funasr/librosa（省 ~1-2GB 常驻），模型加载 + 推理的内存峰值被限制在
+# 子进程内、跑完进程退出即全部归还。2026-11-05 部署实测（8GB 机器）：进程内
+# 识别把系统内存推到 7.4/7.96GB，HTTP 连接被系统掐断（客户端
+# RemoteDisconnected 而服务端其实已成功落盘），且事后 ~2.9GB 常驻不归还。
+# 代价：每次识别多付一次模型加载（约 20-40s，模型已在本地缓存）。
+# 长视频字幕生成与短视频提取快路径（short_video_extract._run_funasr_extract）
+# 都走本函数，开关对两者同时生效。
+_SUBPROCESS_ENV = "SLIRN_ASR_SUBPROCESS"
+_ASR_TIMEOUT_SEC = 6 * 3600
+
+
+def _env_flag(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _run_recognition_subprocess(video_path: str, hotword_str: str, sd: bool) -> dict:
+    """独立进程跑 _run_recognition（同一条实现，仅换进程边界）→ 回读 state JSON。"""
+    repo_root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ)
+    env.pop(_SUBPROCESS_ENV, None)  # worker 内部恒走进程内实现，防递归
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(repo_root), env.get("PYTHONPATH", "")) if p)
+    with tempfile.TemporaryDirectory(prefix="slirn_asr_sub_") as td:
+        out_path = Path(td) / "state.json"
+        cmd = [
+            sys.executable, "-m", "slirn_home.asr_worker",
+            "--video", video_path,
+            "--hotwords", hotword_str,
+            "--sd", "1" if sd else "0",
+            "--out", str(out_path),
+        ]
+        try:
+            r = subprocess.run(
+                cmd, capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=_ASR_TIMEOUT_SEC,
+                env=env, cwd=str(repo_root))
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"识别超时（>{_ASR_TIMEOUT_SEC // 3600} 小时），请检查视频后重试") from None
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"ASR 子进程失败（exit={r.returncode}）: {(r.stderr or '').strip()[-400:]}")
+        if not out_path.is_file():
+            raise RuntimeError("ASR 子进程未产出结果文件")
+        try:
+            return json.loads(out_path.read_text(encoding="utf-8"))
+        except ValueError as e:
+            raise RuntimeError(f"ASR 子进程结果解析失败: {e}") from None
 
 
 # =============== 后台 job 管理 ===============
