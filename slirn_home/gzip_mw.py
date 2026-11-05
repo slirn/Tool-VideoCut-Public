@@ -1,17 +1,23 @@
 # -*- coding: utf-8 -*-
-"""REQ-20261030-015：/slirn/api/* JSON 响应 gzip 压缩（纯 ASGI 中间件）。
+"""REQ-20261030-015：API / 静态资源响应 gzip 压缩（纯 ASGI 中间件）。
 
 工作台 / 短视频项目页的 HTML 响应可达 13MB（内嵌数千字幕/剪辑行），
 未压缩时本机要白白写 13MB、远程（--listen）访问更是数秒起步；压缩后
 ~1MB。全仓 /slirn/api 无流式端点（无 StreamingResponse/SSE），缓冲整包
 再压是安全的。
 
+REQ-20261105-001（部署实测 P1-6）扩面：远程弱链路下除了 API JSON/HTML，
+router.js / home.css 等静态资源（合计 ~500KB）与整站首页同样是慢的
+大头。压缩范围从 /slirn/api/ 扩到 SPA 静态资源与登录页。
+
 规则（宁缺毋滥 —— 视频流绝不动）：
-- 只处理 /slirn/api/ 开头的路径，且**排除 /slirn/api/video/**（Range 视频流，
-  206 分段、拖进度条依赖，压缩/缓冲都会破坏）
+- 处理路径：/slirn/api/、/slirn/static/、/assets/ 前缀 + 精确 "/" 与
+  "/login"；**排除 /slirn/api/video/**（Range 视频流，206 分段、拖进度
+  条依赖，压缩/缓冲都会破坏）与 /gradio_api/（Gradio 自带流式/SSE）
 - 仅 200 响应、无既有 content-encoding、方法非 HEAD
 - 客户端 Accept-Encoding 含 gzip
-- content-type 须是 json / html / text / javascript / css 之一
+- content-type 须是 json / html / text / javascript / css 之一，且不是
+  event-stream（SSE 逐事件推送，缓冲整包会挂起连接）
 - 缓冲完整 body 后统一压（API 响应都是一次性 JSON，最大 ~13MB）；
   小于 64KB 不压（得不偿失，原样直发）
 
@@ -27,7 +33,24 @@ import logging
 log = logging.getLogger(__name__)
 
 _COMPRESSIBLE_CT = ("json", "html", "text/", "javascript", "css")
+_SKIP_CT = ("event-stream",)  # SSE：缓冲整包会挂起连接
 _MIN_SIZE = 64 * 1024  # 小于 64KB 不值得压
+
+# REQ-20261105-001：压缩路径 = API + SPA 静态资源 + 登录页
+_COMPRESS_PREFIXES = ("/slirn/api/", "/slirn/static/", "/assets/")
+_COMPRESS_EXACT = ("/", "/login")
+_SKIP_PREFIXES = ("/slirn/api/video/", "/gradio_api/")
+
+
+def _should_consider(path: str, method: str) -> bool:
+    """路径/方法层过滤（请求一开始就能判定，无需等响应）。"""
+    if method == "HEAD":
+        return False
+    if any(path.startswith(p) for p in _SKIP_PREFIXES):
+        return False
+    if path in _COMPRESS_EXACT:
+        return True
+    return any(path.startswith(p) for p in _COMPRESS_PREFIXES)
 
 
 class SlirnGZipMiddleware:
@@ -41,9 +64,7 @@ class SlirnGZipMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
-        if (not path.startswith("/slirn/api/")
-                or path.startswith("/slirn/api/video/")
-                or scope.get("method") == "HEAD"):
+        if not _should_consider(path, scope.get("method", "")):
             await self.app(scope, receive, send)
             return
         accept = ""
@@ -80,6 +101,7 @@ class SlirnGZipMiddleware:
                 and not has_ce
                 and len(raw) >= _MIN_SIZE
                 and any(t in ct_s for t in _COMPRESSIBLE_CT)
+                and not any(t in ct_s for t in _SKIP_CT)
             )
             if use_gz:
                 gz = gzip.compress(raw, 6)

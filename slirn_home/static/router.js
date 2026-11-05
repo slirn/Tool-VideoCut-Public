@@ -671,7 +671,19 @@
   // 的 defer 属性不生效，执行顺序 = 网络加载完成顺序（竞态）。router.js 先于
   // short_video.js 执行时，showTab 里 window.slirnShortVideoLoad 还是 undefined，
   // 守卫调用被静默跳过 → 恢复 lastTab=短视频页时列表停在骨架「加载中…」永不刷新。
-  // 这里改为就绪前轮询等待（100ms × 最多 100 次 ≈ 10s），就绪后立即调用。
+  // 这里改为就绪前轮询等待，就绪后立即调用。
+  // REQ-20261105-001（部署实测 P1-8）：原预算 100×100ms=10s，弱链路
+  // （Tailscale DERP 中继 ~90KB/s）下 short_video.js（~200KB）要 3-10s+ 才
+  // 下载完，10s 预算会被静默耗尽 → 永远停在「加载中」。改为：600×100ms=60s
+  // 快轮询，之后转 2s×300 慢轮询（再等 10 分钟）；60s 处把骨架文案换成
+  // 明示「网络较慢」的提示，slirnShortVideoLoad 就绪后会整体重绘 innerHTML，
+  // 提示自动被真实内容替换。
+  function _svLoadHint(show) {
+    var el = document.querySelector('#slirn-short-video-inner .slirn-empty');
+    if (!el) return;
+    if (show) el.textContent = '⏳ 前端组件仍在加载（网络较慢），就绪后自动加载列表…';
+    else el.textContent = '短视频列表加载中…';
+  }
   var _svLoadSeq = 0;
   function _callShortVideoLoadWhenReady(forceList) {
     var seq = ++_svLoadSeq;   // 后来的调用接管，旧的轮询作废（防重复加载）
@@ -682,8 +694,9 @@
         try { window.slirnShortVideoLoad(forceList); } catch (e) {}
         return;
       }
-      if (++tries > 100) return;   // ~10s 未就绪 → 放弃（页面异常时不死循环）
-      setTimeout(tick, 100);
+      if (tries === 600) _svLoadHint(true);          // 60s 未就绪 → 换提示文案
+      if (++tries > 900) return;                     // 60s + 10min → 放弃（页面异常时不死循环）
+      setTimeout(tick, tries > 600 ? 2000 : 100);
     })();
   }
 
