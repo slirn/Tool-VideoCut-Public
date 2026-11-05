@@ -92,6 +92,24 @@ def _esc(s: Any) -> str:
     return html.escape(str(s)) if s is not None else ""
 
 
+def _read_task_hotwords(path) -> list[str]:
+    """读任务的 hotwords.txt → 词列表。
+
+    ⚠️ 必须按**行**切，不能用 .split()：写入侧（tasklib/manager.py）是
+    "\\n".join(words) —— 一行一个词；而热词本身可以带空格（"Stable Diffusion"
+    "Claude Code"）。用 .split() 会把一个词劈成两个 —— 表现为：工作台头部
+    chips 多出一截、词数统计偏大，编辑页回填手动热词时也会被拆开再写回，
+    数据越存越碎。按行切才对得上写入侧。
+    """
+    try:
+        p = Path(path)
+        if not p.exists():
+            return []
+        return [w.strip() for w in p.read_text(encoding="utf-8").splitlines() if w.strip()]
+    except OSError:
+        return []
+
+
 def _to_local_naive(dt):
     """datetime / ISO 字符串 → 本地时区的 naive datetime。
 
@@ -415,7 +433,7 @@ def _render_subtitle_zone(task_id: str, t, mgr: TaskManager) -> str:
     hw_count = 0
     try:
         if t.hotwords_path.exists():
-            hw_count = len([w for w in t.hotwords_path.read_text(encoding="utf-8").split() if w])
+            hw_count = len(_read_task_hotwords(t.hotwords_path))
     except Exception:  # noqa: BLE001
         pass
     hint += f" · 任务热词 {hw_count} 个 · 模型 seaco-paraformer（热词优化）"
@@ -463,6 +481,11 @@ def _render_subtitle_zone(task_id: str, t, mgr: TaskManager) -> str:
     from slirn_home import review_proxy as _rp_mod
     _rp_attrs = _rp_mod.render_hint(mgr, task_id)
 
+    # 「区分说话人」默认勾选：服务端 sd 默认是 True（body 缺省即开），前端又固定把
+    # sdEl.checked 传给 /gen_subtitle —— 服务端渲染成未勾选的话，新用户一进页面看到的
+    # 就是「关」，点生成字幕会静默把说话人分离关掉，与标题里「单人视频误分成多人时
+    # 可关闭重生成」的语义相反。router.js applySdSwitchState 也按「服务端默认渲染
+    # 选中」处理（localStorage 无记录时保留服务端状态），故这里渲染成 checked。
     return f'''<div class="slirn-card" style="margin-top:16px;">
         <div class="slirn-panel-header">
             <div class="slirn-panel-title">🎬 处理剪辑 · 第 1 步：生成字幕</div>
@@ -478,7 +501,7 @@ def _render_subtitle_zone(task_id: str, t, mgr: TaskManager) -> str:
             <button class="slirn-btn slirn-btn-primary" data-action="gen-subtitle" data-task-id="{_esc(task_id)}">{gen_btn_label}</button>
             <button class="slirn-btn" data-action="play-segment" data-task-id="{_esc(task_id)}">▶️ 播放视频</button>
             <label class="slirn-sd-toggle" title="开启后用 FunASR cam++ 分辨每句话的说话人：字幕带人员编号并统计每人句数；单人视频误分成多人时可关闭重生成">
-                <input type="checkbox" id="slirn-sd-switch" /> 区分说话人
+                <input type="checkbox" id="slirn-sd-switch" checked /> 区分说话人
             </label>
         </div>
     </div>'''
@@ -1362,7 +1385,7 @@ def _render_optimize_zone(task_id: str, t, mgr: TaskManager) -> str:
     hotwords: list[str] = []
     try:
         if t.hotwords_path.exists():
-            hotwords = [w for w in t.hotwords_path.read_text(encoding="utf-8").split() if w]
+            hotwords = _read_task_hotwords(t.hotwords_path)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1812,7 +1835,7 @@ def _task_echo_fragments(t) -> tuple[str, str, str]:
     hw_words: list[str] = []
     try:
         if t.hotwords_path.exists():
-            hw_words = [w for w in t.hotwords_path.read_text(encoding="utf-8").split() if w]
+            hw_words = _read_task_hotwords(t.hotwords_path)
     except Exception:  # noqa: BLE001
         pass
     sources = t.hotword_sources or {}
@@ -3320,8 +3343,8 @@ def _render_create_task(repo_root: Path, edit=None) -> str:
                     f'<span class="slirn-category-count">{len(missing_picked)}</span></span></div>'
                     f'<div class="slirn-hotword-grid">{cells}</div></div>'
                 )
-        manual_words = [w for w in (edit.hotwords_path.read_text(encoding="utf-8").split()
-                                    if edit.hotwords_path.exists() else []) if sources.get(w) == "manual"]
+        manual_words = [w for w in _read_task_hotwords(edit.hotwords_path)
+                        if sources.get(w) == "manual"]
         # REQ-20260926-NNN：回填 manual textarea 用「半角逗号+换行」拼接
         # （不能用空格，否则 separator 改后多词热词被塌缩成一个）
         manual_text_value = ("," + chr(10)).join(manual_words)
@@ -6622,7 +6645,7 @@ def _register_slirn_api(
         hotwords: list[str] = []
         try:
             if t.hotwords_path.exists():
-                hotwords = [w for w in t.hotwords_path.read_text(encoding="utf-8").split() if w]
+                hotwords = _read_task_hotwords(t.hotwords_path)
         except Exception:  # noqa: BLE001
             pass
 
@@ -6897,7 +6920,7 @@ def _register_slirn_api(
         hotwords: list[str] = []
         try:
             if t.hotwords_path.exists():
-                hotwords = [w for w in t.hotwords_path.read_text(encoding="utf-8").split() if w]
+                hotwords = _read_task_hotwords(t.hotwords_path)
         except Exception:  # noqa: BLE001
             pass
 
@@ -9994,7 +10017,7 @@ def _register_slirn_api(
         hotwords: list[str] = []
         try:
             if t.hotwords_path.exists():
-                hotwords = [w for w in t.hotwords_path.read_text(encoding="utf-8").split() if w]
+                hotwords = _read_task_hotwords(t.hotwords_path)
         except Exception:  # noqa: BLE001
             pass
         entry = llm_config.get_current_entry(repo_root)

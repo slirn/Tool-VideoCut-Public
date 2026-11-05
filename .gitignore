@@ -39,3 +39,7 @@ tools/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# AI 自动录屏演示视频（教程产物，不入库）
+recordings/
+.secrets/

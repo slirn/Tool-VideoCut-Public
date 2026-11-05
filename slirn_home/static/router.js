@@ -1753,6 +1753,13 @@
       if (r && r.ok && typeof r.html === 'string') {
         paneEl.innerHTML = r.html;
         paneEl.removeAttribute('data-lazy-pane');
+        // 释放并发锁：_wbPaneBusy 只是「正在加载」的守卫，加载完必须复位。
+        // ⚠️ 不复位的后果（2026-11-03 录屏实测踩到）：首次载入某懒面板后
+        // 标志一直是 true → 之后工作台整页刷新（保存修订决策/切分决策都会触发
+        // openWorkbench 重建 DOM，新的面板壳又带回了 data-lazy-pane），
+        // 再点该阶段时 wbLoadLazyPane 直接 return，面板永远停在
+        // 「⏳ 面板内容按需加载」占位壳 —— 用户只能 F5 才能看到内容。
+        _wbPaneBusy[paneKey] = false;
         wbPaneMount(paneKey, tid);
       } else {
         _wbPaneBusy[paneKey] = false;  // 允许重试
