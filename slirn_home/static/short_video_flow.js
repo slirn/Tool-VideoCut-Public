@@ -35,12 +35,28 @@
 
   // ---------- 工具 ----------
   function postJSON(url, payload) {
+    // REQ-20261106-002：401 → 弹登录框（与 router.js 同策略，会话失效不再静默）；
+    // AbortController 120s 超时兜底防连接黑洞
+    var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var timer = ctl ? setTimeout(function() { try { ctl.abort(); } catch (e) {} }, 120000) : null;
     return fetch(url, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload || {})
-    }).then(function (r) { return r.json(); })
-      .catch(function (e) { return {ok: false, error: String(e)}; });
+      credentials: 'same-origin',
+      body: JSON.stringify(payload || {}),
+      signal: ctl ? ctl.signal : undefined
+    }).then(function (r) {
+      if (timer) clearTimeout(timer);
+      if (r.status === 401) {
+        try { window.slirnShowLogin && window.slirnShowLogin(); } catch (e) {}
+        return { ok: false, error: '未登录或会话已过期', _status: 401 };
+      }
+      return r.json();
+    }).catch(function (e) {
+      if (timer) clearTimeout(timer);
+      if (ctl && e && e.name === 'AbortError') return { ok: false, error: '请求超时（120s 无响应）', _status: 0, _timeout: true };
+      return {ok: false, error: String(e), _status: 0};
+    });
   }
   function esc(s) {
     return String(s == null ? '' : s)

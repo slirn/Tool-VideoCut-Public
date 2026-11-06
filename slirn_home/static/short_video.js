@@ -6,17 +6,30 @@
   var API = '/slirn/api';
 
   function postJSON(url, payload) {
+    // REQ-20261106-002：401 → 弹登录框（与 router.js 同策略）— 会话被重启/
+    // 过期杀死时给出明确指引，不再静默失败让人以为「点了没反应」；
+    // AbortController 120s 超时兜底，防 keep-alive 死连接黑洞永挂
+    var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var timer = ctl ? setTimeout(function() { try { ctl.abort(); } catch (e) {} }, 120000) : null;
     return fetch(url, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       credentials: 'same-origin',
-      body: JSON.stringify(payload || {})
+      body: JSON.stringify(payload || {}),
+      signal: ctl ? ctl.signal : undefined
     }).then(function(r) {
+      if (timer) clearTimeout(timer);
+      if (r.status === 401) {
+        try { window.slirnShowLogin && window.slirnShowLogin(); } catch (e) {}
+        return { ok: false, error: '未登录或会话已过期', _status: 401 };
+      }
       return r.json().catch(function() {
-        return {ok: false, error: 'HTTP ' + r.status};
+        return {ok: false, error: 'HTTP ' + r.status, _status: r.status};
       });
     }).catch(function(e) {
-      return {ok: false, error: String(e)};
+      if (timer) clearTimeout(timer);
+      if (ctl && e && e.name === 'AbortError') return { ok: false, error: '请求超时（120s 无响应）', _status: 0, _timeout: true };
+      return {ok: false, error: String(e), _status: 0};
     });
   }
 
