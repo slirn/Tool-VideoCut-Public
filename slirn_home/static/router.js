@@ -737,14 +737,36 @@
   function _restoreLastTab() {
     var last = '';
     try { last = localStorage.getItem('slirn.lastTab') || ''; } catch (e) {}
+    // REQ-20261106-011：「Token 用量」是 ⚙ 设置里的二级入口，不是主导航页。
+    // 刷新后停在这里，用户会以为「进了应用」其实停在统计页 —— 按预期回首页。
+    if (last === 'slirn-tab-usage') last = '';
     var navTabs = Object.keys(TAB_BUTTONS).map(function(k) { return TAB_BUTTONS[k]; });
     if (navTabs.indexOf(last) >= 0) showTab(last);
   }
   // 注意：router.js / short_video.js 都是 Gradio 运行时动态插入的脚本，defer
   // 不生效、相互执行顺序不保证 —— 恢复时 short_video.js 可能还没跑。
   // showTab 内部用 _callShortVideoLoadWhenReady 等它就绪后再调，这里无需再等。
-  if (document.readyState === 'complete') _restoreLastTab();
-  else document.addEventListener('DOMContentLoaded', _restoreLastTab);
+  //
+  // REQ-20261106-011（根因修复）：**这里不能同步调用** _restoreLastTab。
+  // router.js 由 Gradio 在运行时注入 <head>，执行时 document.readyState 已经是
+  // 'complete'，同步调用会在 IIFE 还没跑完时就进入 showTab → loadUsagePage →
+  // loadUsageDetail，而它读的 USAGE_STATE 要到文件更后面才赋值 → TypeError
+  // → 整个 IIFE 中断 → 全局 click 委托（文件后半段）从未注册
+  // → **全站所有按钮点了没反应**（实测 2026-11-06：只要上次停在「Token 用量」
+  // 页，刷新后必现；对照组停在「任务」页则一切正常）。
+  // 修法：推迟到 IIFE 执行完之后（setTimeout 0）再恢复，并 try/catch 兜底 ——
+  // 恢复失败最多丢一次 tab 恢复，绝不会再连带打死事件绑定。
+  function _scheduleRestoreLastTab() {
+    var run = function () {
+      try { _restoreLastTab(); }
+      catch (e) { console.warn('[slirn] 恢复上次 tab 失败', e); }
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function () { setTimeout(run, 0); });
+    } else {
+      setTimeout(run, 0);
+    }
+  }
 
   // REQ-20260920-087：任务列表搜索框过滤（client-side）
   // 监听 #slirn-task-search 的 input 事件，按 task_id / name / original_video 文本匹配卡片
@@ -1099,6 +1121,12 @@
   }
 
   // ===== Token 用量独立页（⚙ → Token 用量）=====
+  // REQ-20261106-011：分页状态必须在**任何调用点之前**完成赋值。
+  // 之前它声明在 loadUsagePage 之后，而 showTab → loadUsagePage → loadUsageDetail
+  // 会在 IIFE 执行到一半时被同步触发（见 _scheduleRestoreLastTab 注释），
+  // 那时 USAGE_STATE 还是 undefined → TypeError → 全局事件委托没注册 → 按钮全死。
+  var USAGE_STATE = {page: 1, size: 50};
+
   function loadUsagePage() {
     // 汇总
     postJSON(SLIRN_API + '/llm_usage', {}, {timeoutMs: 20000}).then(function(r) {
@@ -1153,7 +1181,7 @@
   }
 
   // 明细分页状态：page 从 1 起；size 每页条数；筛选条件每次从输入框现取
-  var USAGE_STATE = {page: 1, size: 50};
+  // （USAGE_STATE 已在上面 loadUsagePage 之前声明 —— 见 REQ-20261106-011）
 
   function usageFillSelect(id, options, allLabel) {
     var sel = document.getElementById(id);
@@ -9493,4 +9521,11 @@
   // **任何时候**都能取到「动作 → 当前键位」（此前只在打开快捷键弹窗时发布，
   // 导致平时按硬件键无效）。
   try { revKeysPublish(); } catch (e) {}
+
+  // REQ-20261106-011：恢复上次所在 tab —— **必须放在 IIFE 最后**。
+  // router.js 是 Gradio 运行时注入的，执行时 readyState 已是 'complete'；
+  // 若在这里同步调用，showTab 会在 IIFE 没跑完时执行 → 读未初始化的
+  // USAGE_STATE → TypeError → 后面所有的全局事件委托都没注册 → 全站按钮失效。
+  // 推迟 + try/catch 后，即使恢复失败也只丢一次 tab 恢复，不会连坐。
+  _scheduleRestoreLastTab();
 })();
