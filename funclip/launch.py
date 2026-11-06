@@ -25,7 +25,8 @@ if __name__ == "__main__":
     parser.add_argument('--model', '-m', type=str, default="paraformer", choices=["paraformer", "fun-asr-nano", "sensevoice"], help="ASR model: paraformer, fun-asr-nano, or sensevoice")
     parser.add_argument('--share', '-s', action='store_true', help="if to establish gradio share link")
     parser.add_argument('--port', '-p', type=int, default=7860, help='port number')
-    parser.add_argument('--listen', action='store_true', help="if to listen to all hosts")
+    parser.add_argument('--listen', nargs='?', const='0.0.0.0', default=None, metavar='HOST',
+                        help="bind address: bare --listen = 0.0.0.0 (all hosts), --listen HOST = specific address, omit = 127.0.0.1 only")
     parser.add_argument('--home', type=str, default="original", choices=["original", "slirn"], help="which home page to launch: original (upstream FunClip) or slirn (custom home)")
     args = parser.parse_args()
 
@@ -70,7 +71,9 @@ if __name__ == "__main__":
         slirn_app = build_app()
         # slirn 首页默认端口 7861（D6：与上游首页端口分离）
         slirn_port = args.port if args.port != 7860 else 7861
-        server_name = '0.0.0.0' if args.listen else '127.0.0.1'
+        # --listen [HOST]：裸 --listen 绑 0.0.0.0；--listen HOST 绑指定地址（部署在反代后面时用
+        # --listen 127.0.0.1，明文只走本机回环，公网由 Caddy/frp 的 TLS 入口承接）；不写则仅回环
+        server_name = args.listen or '127.0.0.1'
         # Gradio 6 在 launch() 内部会用 App.create_app(...) 重建 self.app，
         # build_app() 里注册的 /slirn/api/* 路由会被丢弃。
         # 用 prevent_thread_lock=True 让 launch() 立刻返回，然后我们在新的 self.app 上重新注册路由。
@@ -205,9 +208,7 @@ if __name__ == "__main__":
     audio_clipper = VideoClipper(funasr_model)
     audio_clipper.lang = args.lang
     
-    server_name='127.0.0.1'
-    if args.listen:
-        server_name = '0.0.0.0'
+    server_name = args.listen or '127.0.0.1'
         
     def save_text_to_file(content, extension, output_dir=None):
         if not content:
