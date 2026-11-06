@@ -21,13 +21,22 @@
 
   var SLIRN_API = '/slirn/api';
 
-  function postJSON(url, payload) {
+  function postJSON(url, payload, opts) {
+    // 超时兜底（REQ-20261106-001）：fetch 原生没有超时 — keep-alive 连接被
+    // 中间链路（Tailscale DERP / NAT）静默丢弃时，请求发进黑洞、promise 永不
+    // 落定，调用页就永远停在「加载中」。默认 120s；小查询可用 opts.timeoutMs 收紧。
+    opts = opts || {};
+    var timeoutMs = opts.timeoutMs || 120000;
+    var ctl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var timer = ctl ? setTimeout(function() { try { ctl.abort(); } catch (e) {} }, timeoutMs) : null;
     return fetch(url, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       credentials: 'same-origin',                  // REQ-20260926-NNN：带 cookie 会话
-      body: JSON.stringify(payload || {})
+      body: JSON.stringify(payload || {}),
+      signal: ctl ? ctl.signal : undefined
     }).then(function(r) {
+      if (timer) clearTimeout(timer);
       if (r.status === 401) {                     // REQ-20260926-NNN：401 → 弹登录 modal
         try { window.slirnShowLogin && window.slirnShowLogin(); } catch (e) {}
         return { ok: false, error: '未登录或会话已过期', _status: 401 };
@@ -39,7 +48,13 @@
         }).catch(function() { return { ok: false, error: 'HTTP ' + r.status, _status: r.status }; });
       }
       return r.json();
-    }).catch(function(e) { return {ok: false, error: String(e), _status: 0}; });
+    }).catch(function(e) {
+      if (timer) clearTimeout(timer);
+      if (ctl && e && e.name === 'AbortError') {
+        return { ok: false, error: '请求超时（' + Math.round(timeoutMs / 1000) + 's 无响应，网络不稳或连接已断开）', _status: 0, _timeout: true };
+      }
+      return {ok: false, error: String(e), _status: 0};
+    });
   }
 
   function postForm(url, formData) {
@@ -1064,10 +1079,15 @@
   // ===== Token 用量独立页（⚙ → Token 用量）=====
   function loadUsagePage() {
     // 汇总
-    postJSON(SLIRN_API + '/llm_usage', {}).then(function(r) {
+    postJSON(SLIRN_API + '/llm_usage', {}, {timeoutMs: 20000}).then(function(r) {
       var box = document.getElementById('slirn-usage-summary');
       if (!box) return;
-      if (!r || !r.ok) { box.innerHTML = ''; return; }
+      if (!r || !r.ok) {
+        box.innerHTML = '<div class="slirn-form-hint" style="color:#ef4444;">⚠️ 汇总加载失败：' +
+          escapeHtml((r && r.error) || '未知错误') +
+          ' <button class="slirn-btn" data-action="usage-page-refresh" style="padding:2px 8px;">↻ 重试</button></div>';
+        return;
+      }
       var u = r.usage || {};
       var total = u.total || {};
       if (!total.calls) {
@@ -1137,8 +1157,16 @@
       if (v !== '' && isFinite(v)) payload[k === 'dmin' ? 'dur_min_ms' : 'dur_max_ms'] = Math.round(parseFloat(v) * 1000);
     });
     body.innerHTML = '<div class="slirn-form-hint">⏳ 加载中…</div>';
-    postJSON(SLIRN_API + '/llm_usage_log', payload).then(function(r) {
-      if (!r || !r.ok) { body.innerHTML = ''; return; }
+    // 明细是小查询（服务端 <1s），20s 超时收紧 — 网络黑洞时尽快给出重试入口
+    postJSON(SLIRN_API + '/llm_usage_log', payload, {timeoutMs: 20000}).then(function(r) {
+      if (!r || !r.ok) {
+        // REQ-20261106-001：失败不再无声清空 — 显示原因 + 重试按钮，
+        // 避免「⏳ 加载中」永远挂着让人以为整页卡死
+        body.innerHTML = '<div class="slirn-form-hint" style="color:#ef4444;">⚠️ 明细加载失败：' +
+          escapeHtml((r && r.error) || '未知错误') +
+          ' <button class="slirn-btn" data-action="usage-page-refresh" style="padding:2px 8px;">↻ 重试</button></div>';
+        return;
+      }
       // 下拉选项（来自日志中出现过的值；保留当前选中）
       usageFillSelect('slirn-usage-model', r.facets && r.facets.models, '模型（全部）');
       usageFillSelect('slirn-usage-stage', r.facets && r.facets.stages, '阶段（全部）');
@@ -8828,6 +8856,9 @@
     else if (action === 'usage-page-filter') {
       USAGE_STATE.page = 1;
       loadUsageDetail();
+    }
+    else if (action === 'usage-page-refresh') {   // REQ-20261106-001：汇总/明细失败后的重试入口
+      loadUsagePage();
     }
     else if (action === 'usage-page-reset') {
       ['slirn-usage-filter', 'slirn-usage-model', 'slirn-usage-stage', 'slirn-usage-from',

@@ -131,7 +131,10 @@ def record(model: str, prompt_tokens: int, completion_tokens: int,
 
 # ---------- 逐笔明细（llm_usage_log.jsonl） ----------
 
-_MAX_LOG_LINES = 5000
+# 逐笔明细只保留近期记录（REQ-20261106-001）：用户明确不要历史堆积 —
+# 明细页每页默认 50 条，2000 行上限（裁半后稳态 1000–2000 行，≤200KB）足够回看，
+# list_records 全量解析的成本保持毫秒级。
+_MAX_LOG_LINES = 2000
 
 
 def _append_log(path: Path, rec: dict) -> None:
