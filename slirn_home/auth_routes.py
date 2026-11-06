@@ -273,7 +273,7 @@ def register_auth_endpoints(app: Any, auth: AuthStore, repo_root: Path,
             ip_guard.clear_failures(ip)
         # REQ-20261021-142：单会话 —— 记录本次登录踢掉了几个旧会话
         old_sessions = auth.user_session_count(username)
-        token = auth.create_session(username, ttl_days=30)
+        token = auth.create_session(username)   # REQ-20261106-003：TTL 2 小时
         kick_note = (f"同账号旧会话 {old_sessions} 个已失效"
                      if old_sessions > 0 else "")
         auth.record_login_event(username, ip, "success", kick_note)
@@ -383,7 +383,7 @@ def register_auth_endpoints(app: Any, auth: AuthStore, repo_root: Path,
             user = auth.create_user(username, username, password, is_admin=True)
         except ValueError as e:
             return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
-        token = auth.create_session(username, ttl_days=30)
+        token = auth.create_session(username)   # REQ-20261106-003：TTL 2 小时
         resp = JSONResponse({"ok": True, "user": {
             "username": user["username"],
             "display_name": user["display_name"],

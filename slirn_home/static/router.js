@@ -126,6 +126,20 @@
   // 启动时拉一次当前用户
   try { _refreshCurrentUser(); } catch (e) {}
 
+  // ===== REQ-20261106-003：会话 2 小时过期 —— 已打开的页面每 60s 自检，
+  // 服务端明确未登录（过期/被踢）就整页跳回 /login 登录门页，实现
+  // 「会话超时自动退到登录页」。网络失败（ok:false）不跳 —— 弱链路抖动
+  // 不应把正在使用的页面踢走；ok:true+user:null 才是确定性的未登录。
+  (function () {
+    setInterval(function () {
+      getJSON(SLIRN_API + '/auth/me').then(function (r) {
+        if (r && r.ok && !r.user) {
+          try { location.replace('/login'); } catch (e) {}
+        }
+      });
+    }, 60000);
+  })();
+
   // ===== REQ-20260926-NNN：用户管理 modal（仅 admin） =====
 
   function _usersModalMsg(msg, isErr) {

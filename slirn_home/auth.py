@@ -87,6 +87,25 @@ def _locked(fn):
     return wrapper
 
 
+# REQ-20261106-003（用户明确要求）：会话有效期 2 小时，超时自动退回登录页。
+# 双重强制：①创建时 expires_at = now + TTL；②校验时同时按 created_at 算龄
+# （防史上长 TTL 的存量会话绕过——改前签发的 30 天会话也会在 2 小时后失效）。
+_SESSION_TTL_HOURS = 2.0
+_SESSION_TTL_S = _SESSION_TTL_HOURS * 3600
+
+
+def _session_alive(s: dict, now: float) -> bool:
+    """单条会话是否仍有效：expires_at 未到 且 创建未超 TTL。"""
+    if float(s.get("expires_at", 0)) < now:
+        return False
+    created = s.get("created_at", "")
+    try:
+        created_ts = time.mktime(time.strptime(created, "%Y-%m-%dT%H:%M:%S"))
+    except (ValueError, TypeError):
+        return False                     # 缺失/坏时间戳 → 视为失效（宁严勿宽）
+    return (now - created_ts) < _SESSION_TTL_S
+
+
 # ===================== AuthStore =====================
 
 class AuthStore:
@@ -258,7 +277,7 @@ class AuthStore:
     # ---------- 会话 ----------
 
     @_locked
-    def create_session(self, username: str, ttl_days: int = 30) -> str:
+    def create_session(self, username: str, ttl_hours: float = _SESSION_TTL_HOURS) -> str:
         sessions = _load_json(self.sessions_path, [])
         token = secrets.token_hex(32)
         now = time.time()
@@ -266,7 +285,7 @@ class AuthStore:
             "token": token,
             "username": username,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "expires_at": now + ttl_days * 86400,
+            "expires_at": now + ttl_hours * 3600,
         }
         # REQ-20261021-142：单会话 —— 同用户旧会话全部失效（后登踢前），
         # 只保留本次新会话。登录 / bootstrap 共用本方法，一处生效。
@@ -279,7 +298,7 @@ class AuthStore:
         now = time.time()
         return sum(1 for s in _load_json(self.sessions_path, [])
                    if s.get("username") == username
-                   and s.get("expires_at", 0) >= now)
+                   and _session_alive(s, now))
 
     @_locked
     def user_from_token(self, token: str) -> dict | None:
@@ -293,7 +312,7 @@ class AuthStore:
         expired_to_purge = False
         for s in sessions:
             if s.get("token") == token:
-                if s.get("expires_at", 0) >= now:
+                if _session_alive(s, now):
                     result = s
                     kept.append(s)          # 有效会话必须保留（否则变单次会话）
                 else:
@@ -323,7 +342,7 @@ class AuthStore:
     def purge_expired_sessions(self) -> int:
         sessions = _load_json(self.sessions_path, [])
         now = time.time()
-        kept = [s for s in sessions if s.get("expires_at", 0) >= now]
+        kept = [s for s in sessions if _session_alive(s, now)]
         n = len(sessions) - len(kept)
         if n > 0:
             _save_json(self.sessions_path, kept)
