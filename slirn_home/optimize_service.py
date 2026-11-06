@@ -755,7 +755,9 @@ def _merge_segments_llm(
     整行不带（行内切分按比例降级，与直读路径同口径）。永不抛异常。"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    from slirn_home.revision_service import _call_llm, _effective_workers, pack_batches
+    from slirn_home.revision_service import (
+        _call_llm, _effective_workers, effective_out_cap, pack_batches,
+    )
     from slirn_home.cutlist_service import ms2srt
 
     n = len(segments)
@@ -777,7 +779,7 @@ def _merge_segments_llm(
     def _one_safe(batch: list[dict]) -> list[dict]:
         try:
             raw = _call_llm(MERGE_SYSTEM, _merge_user_prompt(batch), entry,
-                            max_tokens=8192, temperature=0.2,
+                            max_tokens=effective_out_cap(entry), temperature=0.2,
                             usage_ctx={"task_id": task_id, "stage": "断句整理"})
             return parse_merge_groups(raw, batch)
         except ValueError as e:
@@ -915,12 +917,12 @@ def start_job(
             def _analyze(batch: list[dict], strict: bool = False) -> dict[str, list[dict]]:
                 """分析一批：解析失败/截断 → 减半重试；单行仍失败 → 放弃该批
                 （提议性质的提取，不阻塞流程，宁缺勿错）。"""
-                from slirn_home.revision_service import _call_llm
+                from slirn_home.revision_service import _call_llm, effective_out_cap
 
                 system = OPT_SYSTEM + (OPT_STRICT_SUFFIX if strict else "")
                 try:
                     raw = _call_llm(system, build_user_prompt(task_name, hotwords, batch),
-                                entry, max_tokens=8192,
+                                entry, max_tokens=effective_out_cap(entry),
                                 usage_ctx={"task_id": task_id, "stage": "字幕优化"})
                     return parse_occurrences(raw, batch)
                 except ValueError as e:

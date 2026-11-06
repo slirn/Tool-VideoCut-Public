@@ -9836,6 +9836,20 @@ def _register_slirn_api(
             _session_token = _get_ctx_token() or ""
         except Exception:  # noqa: BLE001 — 取不到就退化为「无会话」（旁路模式）
             _session_token = ""
+        # REQ-20261106-010：自动流程内部回调改用**服务会话**（24h TTL）——
+        # 用户浏览器会话 2 小时就过期（用户明确要求），而一条自动流程常跑好几
+        # 小时；沿用用户会话会让流程在「保存」那一步 401（实测 20261106-001 跑了
+        # 66 分钟后死在 save_revision，不是 LLM 的问题）。服务会话不顶掉用户登录，
+        # 归属仍是该用户（任务归属校验照常）。
+        if _session_token:
+            try:
+                _uname = str((_get_cur_user() or {}).get("username") or "")
+                if _uname:
+                    _session_token = auth.create_service_session(_uname)
+            except Exception as e:  # noqa: BLE001 — 建服务会话失败则沿用原会话
+                import logging as _lg
+                _lg.getLogger(__name__).warning(
+                    "[pipeline] 建服务会话失败，沿用用户会话（长流程可能中途 401）: %s", e)
         started = pipeline_service.run_pipeline(
             tid, base_url, outputs_dir, since=since, session_token=_session_token)
         if not started:

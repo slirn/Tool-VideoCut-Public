@@ -209,11 +209,12 @@ def start_job(
         def _analyze(batch: list[dict]) -> dict[str, list[dict]]:
             """分析一批：解析失败/截断 → 减半重试；单行仍失败 → 放弃该批替换
             （本阶段是锦上添花的校对，不阻塞流程，宁缺勿错）。"""
-            from slirn_home.revision_service import _call_llm
+            from slirn_home.revision_service import _call_llm, effective_out_cap
 
             sub_prompt = build_user_prompt(task_name, hotwords, batch)
             try:
-                raw = _call_llm(FINE_SYSTEM, sub_prompt, entry, max_tokens=8192,
+                raw = _call_llm(FINE_SYSTEM, sub_prompt, entry,
+                                max_tokens=effective_out_cap(entry),
                                 usage_ctx={"task_id": task_id, "stage": "精剪校对"})
                 return parse_replacements(raw, batch, hotwords)
             except ValueError as e:

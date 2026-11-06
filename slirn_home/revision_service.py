@@ -12,6 +12,7 @@ fix 内容更正（错字别字，附更正后文本）/ review 人工复核）�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -24,6 +25,9 @@ from typing import Callable
 log = logging.getLogger(__name__)
 
 REVISION_JSON = "revision.json"
+# 断点续传检查点（REQ-20261106-001）：每完成一个打包批次就原子落盘一次，
+# 中断后重跑只补做未完成的批次。行内容/模型/严谨性/提示词任一指纹变化 → 作废重跑。
+CHECKPOINT_JSON = "revision_checkpoint.json"
 
 # 模型建议类别 → (中文标签, 徽章色)
 LLM_CATEGORIES: dict[str, tuple[str, str]] = {
@@ -47,23 +51,47 @@ USER_DECISIONS: dict[str, str] = {
 # 长字幕分批：按上下文预算**整行打包**（pack_batches），不再固定段数。
 # 短行多装、长行少装，充分用满上下文、调用次数最少。预算三来源：
 # ① 输入侧：探测到的上下文窗口（settings context_cache，llm_probe 探测）
-#    减去输出预留与安全余量；② 输出侧：max_tokens=8192 截断线（实测
-#    data/llm_usage_log.jsonl 每段输出 70-95 tokens，这是主要约束）；③ 质量
-# 上限：批太长模型中后段易敷衍。实测固定开销 ≈800 tokens/批、短行 ≈60。
+#    减去输出预留与安全余量；② 输出侧：输出预算上限 max_tokens（实测每行输出
+#    112 tokens —— 2026-11-06 用 GLM-5.3 统计 196 次调用：整批每行 112.2）；
+# ③ 质量上限：批太长模型中后段易敷衍。实测固定开销 ≈800 tokens/批、短行 ≈60。
+#
+# **2026-11-06 修正（实测推翻旧结论）**：8192 这个输出上限历来是**我们自己写死的**
+# （旧 BATCH_OUT_CAP），不是模型限制 —— 实测 GLM-5.3 接受 max_tokens=65536/131072；
+# 而 73 行 × 112 tokens ≈ 8186 **正好顶满 8192** → 整批 97% 撞线截断 → 减半重试
+# 风暴（调用量 3 倍：196 次调用里 148 次是重试产物）。
+# 现在输出预算随上下文窗口自适应（out_cap_for）：128K 窗口 → 32768 → 约 248 行/批。
 BATCH_FIXED_TOK = 800       # 每批固定开销（系统提示 + 任务说明）
 BATCH_LINE_MIN_TOK = 60     # 每行输入保底（短字幕行实测）
-BATCH_LINE_OUT_TOK = 95     # 每行输出上界（截断线推导依据）
-BATCH_OUT_CAP = 8192        # _analyze 传给 anthropic 协议的 max_tokens
+BATCH_LINE_OUT_TOK = 112    # 每行输出上界（实测 GLM-5.3 112.2 tokens/行）
+BATCH_OUT_CAP = 32768       # 输出预算天花板（anthropic max_tokens 全局上限）
+BATCH_OUT_CAP_MIN = 4096    # 小窗口模型的输出预算下限
 BATCH_MARGIN_TOK = 2048     # 上下文安全余量（分词偏差 + 记账误差）
-BATCH_MIN, BATCH_MAX = 10, 80   # 段数下限（太小浪费请求）/ 上限（质量）
+BATCH_MIN, BATCH_MAX = 10, 260  # 段数下限（太小浪费请求）/ 上限（质量 + 输出预算）
 DEFAULT_CTX_TOKENS = 32768  # 未探测时的保守假设（在售模型几乎都 ≥32K）
+LLM_TOKENS_PER_SEC = 60.0   # 生成速率保守估计（实测 GLM-5.3 ≈70 tok/s）
+LLM_TIMEOUT_MIN, LLM_TIMEOUT_MAX = 180.0, 900.0
+
+
+def out_cap_for(context_tokens: int) -> int:
+    """本次可用的输出预算（max_tokens）——随上下文窗口自适应。
+
+    ① 上限 BATCH_OUT_CAP（实测模型可接受到 65536/131072）；
+    ② 通常不超过窗口的 1/4，否则小窗口模型（如 32K）输入+输出会溢出被拒；
+    ③ 但输出预算不能吃掉整个窗口 —— 必须给输入留出余量（窗口小到连
+       BATCH_OUT_CAP_MIN 都放不下时，按"窗口 - 余量 - 固定开销"收窄）。
+    """
+    ctx = max(int(context_tokens or 0), 0)
+    cap = min(BATCH_OUT_CAP, max(BATCH_OUT_CAP_MIN, ctx // 4))
+    room = max(1024, ctx - BATCH_MARGIN_TOK - BATCH_FIXED_TOK)
+    return int(max(1024, min(cap, room)))
 
 
 def suggest_batch(context_tokens: int) -> int:
     """由上下文窗口推导每批段数上限：输入侧与输出侧（截断线）取小。"""
-    n_ctx = (int(context_tokens) - BATCH_OUT_CAP - BATCH_MARGIN_TOK
+    cap = out_cap_for(context_tokens)
+    n_ctx = (int(context_tokens) - cap - BATCH_MARGIN_TOK
              - BATCH_FIXED_TOK) // BATCH_LINE_MIN_TOK
-    n_out = int(BATCH_OUT_CAP * 0.85) // BATCH_LINE_OUT_TOK  # 输出留 15% 余量
+    n_out = int(cap * 0.85) // BATCH_LINE_OUT_TOK  # 输出留 15% 余量
     return max(BATCH_MIN, min(n_ctx, n_out, BATCH_MAX))
 
 
@@ -77,6 +105,25 @@ def _effective_context(entry: dict | None) -> int:
     except Exception:  # noqa: BLE001 — 缓存读取失败退默认，不影响分批
         pass
     return DEFAULT_CTX_TOKENS
+
+
+def effective_out_cap(entry: dict | None = None) -> int:
+    """本次调用可用的输出预算（max_tokens）——随该模型的上下文窗口自适应。
+
+    与 pack_batches 同源，避免"批大了但 max_tokens 还是老值"→ 必截断。
+    """
+    return out_cap_for(_effective_context(entry))
+
+
+def effective_timeout(max_tokens: int | None = None, entry: dict | None = None) -> float:
+    """调用超时随输出预算放大：按 ~60 tok/s 保守生成速率 + 50% 余量。
+
+    2026-11-06：248 行 × 112 tokens ≈ 28K 输出，按实测 70 tok/s 需 ~400s，
+    固定 180s 超时会把好批次直接砍成超时重试（批越大越容易被砍）。
+    """
+    cap = int(max_tokens) if max_tokens else 4096   # anthropic 协议默认值
+    need = cap / LLM_TOKENS_PER_SEC * 1.5
+    return float(max(LLM_TIMEOUT_MIN, min(LLM_TIMEOUT_MAX, need)))
 
 
 def _line_tokens(line) -> int:
@@ -95,7 +142,7 @@ def pack_batches(lines: list, entry: dict | None = None) -> list[list]:
     """
     ctx = _effective_context(entry)
     cap = suggest_batch(ctx)
-    budget = ctx - BATCH_OUT_CAP - BATCH_MARGIN_TOK  # 每批输入可用额度
+    budget = ctx - out_cap_for(ctx) - BATCH_MARGIN_TOK  # 每批输入可用额度
     batches: list[list] = []
     acc: list = []
     used = BATCH_FIXED_TOK
@@ -109,6 +156,81 @@ def pack_batches(lines: list, entry: dict | None = None) -> list[list]:
     if acc:
         batches.append(acc)
     return batches or [[]]
+
+
+# ---------------------------------------------------------------------------
+# 断点续传检查点（REQ-20261106-002）
+# 场景：一次修订要打几十批大模型调用，中途服务重启 / 断网 / 欠费失败后，
+# 用户重开「开始修订」时只补做未完成的批次，已完成的直接复用（像断点续传）。
+# 检查点 = 已完成批次的 LLM 解析结果，键为该批的行序号列表（"3,4,5"）。
+# 有效性 = 行内容指纹 + 模型 + 严谨性 + 系统提示词四个指纹全部一致，
+# 任一变化（重跑 ASR、换模型、改提示词）都意味着旧结果不可复用 → 整体作废重跑。
+# ---------------------------------------------------------------------------
+def _sha1_text(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _lines_fingerprint(segments: list) -> str:
+    """对参与修订的行做内容指纹（i/text/起止时间）。"""
+    h = hashlib.sha1()
+    for s in segments or []:
+        h.update("\x1f".join((
+            str(int(s.get("i", 0) or 0)),
+            str(s.get("text") or ""),
+            str(int(s.get("start_ms", 0) or 0)),
+            str(int(s.get("end_ms", 0) or 0)),
+        )).encode("utf-8"))
+    return h.hexdigest()
+
+
+def _batch_key(batch: list) -> str:
+    """批次键 = 行序号列表（"3,4,5"）。"""
+    return ",".join(str(int(s["i"])) for s in batch)
+
+
+def _load_checkpoint(path, segments, entry, rigor, system_prompt) -> dict:
+    """读检查点：文件缺失/损坏/指纹不匹配 → 返回空的全新检查点。"""
+    fresh = {
+        "version": 1,
+        "fingerprint": _lines_fingerprint(segments),
+        "model": str((entry or {}).get("id") or ""),
+        "rigor": str(rigor),
+        "prompt_sha": _sha1_text(system_prompt),
+        "done": {},
+    }
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return fresh
+    if not isinstance(data, dict):
+        return fresh
+    done = data.get("done")
+    if (data.get("version") == 1
+            and data.get("fingerprint") == fresh["fingerprint"]
+            and str(data.get("model") or "") == fresh["model"]
+            and str(data.get("rigor") or "") == fresh["rigor"]
+            and str(data.get("prompt_sha") or "") == fresh["prompt_sha"]
+            and isinstance(done, dict)):
+        fresh["done"] = {
+            str(k): v for k, v in done.items()
+            # 只要结构合法的结果：非空列表且每项都是 dict（半个/坏批次不复活）
+            if isinstance(v, list) and v and all(isinstance(x, dict) for x in v)
+        }
+    return fresh
+
+
+def _save_checkpoint(path, ckpt: dict) -> None:
+    """原子落盘（tmp + rename）。写失败只告警不中断 — 续传是尽力而为的优化。"""
+    try:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        payload = dict(ckpt, updated_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception as e:  # noqa: BLE001 — 磁盘满/占用等，不影响主流程
+        log.warning("[revise] 写修订断点失败（不影响任务继续）: %s", e)
+
 
 # 并发批次 worker 数：4 个在途请求。撞限流由 _chat_completion 的全局退避
 # （_pause_all）联动各 worker 一起等待，不会报错，最多退化为近似串行。
@@ -526,7 +648,8 @@ def _chat_completion(entry: dict, messages: list[dict],
 def _call_llm(system: str, user: str, entry: dict | None = None, retries: int = 2,
               max_tokens: int | None = None,
               temperature: float | None = None,
-              usage_ctx: dict | None = None) -> str:
+              usage_ctx: dict | None = None,
+              timeout: float | None = None) -> str:
     """调用注册的大模型 → 文本响应。瞬时失败退避重试（2s/4s）。
 
     entry: llm_config 注册项（app.py 传入用户选择的当前模型，REQ-20260915-008）；
@@ -534,6 +657,8 @@ def _call_llm(system: str, user: str, entry: dict | None = None, retries: int = 
     max_tokens: anthropic 协议输出上限（None → 4096 默认）。
     temperature: None 不传（各端默认）；需要稳定复现的整理类任务可显式压低。
     usage_ctx: 用量记账上下文 {"task_id":…, "stage":…}（llm_usage 维度，见模块注释）。
+    timeout: None → 按 max_tokens 推算（effective_timeout：大输出预算需要更久，
+    否则好批次会被固定 180s 砍成超时重试）。
     """
     if entry is None:
         from slirn_home.llm_config import DEFAULT_MODELS
@@ -547,7 +672,9 @@ def _call_llm(system: str, user: str, entry: dict | None = None, retries: int = 
     try:
         return _chat_completion(entry, messages, retries=retries,
                                 max_tokens=max_tokens, temperature=temperature,
-                                usage_ctx=usage_ctx)
+                                usage_ctx=usage_ctx,
+                                timeout=(timeout if timeout is not None
+                                         else effective_timeout(max_tokens, entry)))
     except ValueError:
         raise  # 截断：上层减半重试
     except Exception as e:  # noqa: BLE001
@@ -825,12 +952,13 @@ def start_job(
 
             确定性失败（欠费/Key 无效等 RuntimeError）向上抛 → job 终止并透传原因
             —— 这种错误每批都会失败，减半只是浪费调用（REQ-20260915-007）。
-            max_tokens=8192：anthropic 协议必填且默认 4096 会把 40 段/批（≈4K
-            输出）拦腰截断；openai 协议分支忽略此参数，不受影响。
+            max_tokens=effective_out_cap(entry)（2026-11-06 起随上下文窗口自适应，
+            128K 窗口 → 32768）：anthropic 协议必填，默认 4096 会把几十段/批
+            （≈5K+ 输出）拦腰截断；openai 协议分支忽略此参数，不受影响。
             """
             try:
                 raw = _call_llm(system_prompt, build_user_prompt(task_name, hotwords, batch),
-                                entry, max_tokens=8192,
+                                entry, max_tokens=effective_out_cap(entry),
                                 usage_ctx={"task_id": task_id, "stage": "字幕修订"})
                 return parse_llm_suggestions(raw, batch)
             except ValueError as e:
@@ -846,19 +974,48 @@ def start_job(
 
         try:
             batches = pack_batches(segments, entry)
+            # 断点续传（REQ-20261106-002）：加载检查点，上一轮已完成的批次直接
+            # 复用结果、不再调用大模型。批次是 pool.submit 前就全部入队的，
+            # 某批确定性失败时其余在途批次照常完成 — 逐批收集结果后再上抛，
+            # 让检查点尽量多地留住已完成的工作。
+            ckpt_path = outputs_dir / CHECKPOINT_JSON
+            ckpt = _load_checkpoint(ckpt_path, segments, entry, rigor, system_prompt)
+            resumed = sum(1 for b in batches if _batch_key(b) in ckpt["done"])
+            if resumed:
+                _stage(f"断点续传：复用上次已完成的 {resumed}/{len(batches)} 批")
+                log.info("[revise][%s] 断点续传命中 %d/%d 批", task_id, resumed, len(batches))
             # WORKERS 并发跑批；结果按下标回原顺序（后面 zip(segments, suggestions)
             # 依赖顺序）。撞限流时 _chat_completion 的 _pause_all 让各 worker 联动
             # 退避，取代原来的批间 sleep。
             from concurrent.futures import ThreadPoolExecutor, as_completed
             results: list[list[dict] | None] = [None] * len(batches)
+            first_err: Exception | None = None
             with ThreadPoolExecutor(max_workers=_effective_workers(),
                                     thread_name_prefix="revise") as pool:
-                futs = {pool.submit(_analyze, b): bi for bi, b in enumerate(batches)}
-                done = 0
+                futs = {}
+                for bi, b in enumerate(batches):
+                    hit = ckpt["done"].get(_batch_key(b))
+                    if hit is not None:
+                        results[bi] = hit
+                        continue
+                    futs[pool.submit(_analyze, b)] = (bi, _batch_key(b))
+                done = len(batches) - len(futs)
+                _stage(f"调用大模型 ({done}/{len(batches)})")
                 for fut in as_completed(futs):
-                    results[futs[fut]] = fut.result()  # 确定性失败 → 上抛终止 job（原语义）
+                    bi, key = futs[fut]
+                    try:
+                        res = fut.result()  # 确定性失败 → 收集后在循环外上抛终止 job（原语义）
+                    except Exception as e:  # noqa: BLE001
+                        if first_err is None:
+                            first_err = e
+                        continue
+                    results[bi] = res
+                    ckpt["done"][key] = res
+                    _save_checkpoint(ckpt_path, ckpt)  # 每批一存，断了能续
                     done += 1
                     _stage(f"调用大模型 ({done}/{len(batches)})")
+            if first_err is not None:
+                raise first_err
             suggestions: list[dict] = []
             for r in results:
                 suggestions.extend(r or [])
@@ -888,21 +1045,28 @@ def start_job(
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "saved_at": None,
                 "segments_count": len(entries),
+                "resumed_batches": resumed,
                 "entries": entries,
             }
             outputs_dir.mkdir(parents=True, exist_ok=True)
             (outputs_dir / REVISION_JSON).write_text(
                 json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            # revision.json 已落盘，检查点使命完成 → 删除（失败时保留供下次续传）
+            try:
+                ckpt_path.unlink(missing_ok=True)
+            except Exception as e:  # noqa: BLE001
+                log.warning("[revise][%s] 清理修订断点失败: %s", task_id, e)
             job["entries_count"] = len(entries)
             job["state"] = "done"
             job["stage"] = "完成"
             job["finished_at"] = time.time()
-            log.info("[revise][%s] 完成：%d 条建议", task_id, len(entries))
+            log.info("[revise][%s] 完成：%d 条建议（续传复用 %d 批）", task_id, len(entries), resumed)
             if exec_id:
                 from slirn_home import execution_history
                 execution_history.patch_extra(outputs_dir, exec_id,
-                                              {"entries": len(entries), "batches": len(batches)})
+                                              {"entries": len(entries), "batches": len(batches),
+                                               "resumed_batches": resumed})
                 execution_history.record_finish(outputs_dir, exec_id, success=True)
             if on_success:
                 try:

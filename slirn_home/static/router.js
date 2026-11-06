@@ -813,6 +813,8 @@
         '<div class="slirn-modal-filename">' + escapeHtml(file.name) + '（' + sizeMb + ' MB）</div>' +
         '<div class="slirn-progress-track"><div id="slirn-progress-bar" class="slirn-progress-bar"></div></div>' +
         '<div id="slirn-progress-text" class="slirn-progress-text">准备中…</div>' +
+        // REQ-20261106-003：文件太大/太慢时可以取消，换个小的再传
+        '<button class="slirn-btn" data-action="upload-cancel" style="margin-top:14px;">✕ 取消上传</button>' +
       '</div>';
     document.body.appendChild(overlay);
     return overlay;
@@ -830,6 +832,12 @@
   function closeUploadDialog() {
     var m = document.getElementById('slirn-upload-modal');
     if (m) m.remove();
+  }
+  // 上传结束的兜底提示：取消 → 中性提示；其他 → 报错（REQ-20261106-003）
+  function uploadFailToast(err) {
+    var msg = (err && err.message) ? err.message : String(err);
+    if (msg.indexOf('取消') >= 0) toast('已取消上传，可重新选择文件');
+    else toast('❌ 上传失败: ' + msg, 'error');
   }
 
   // ===== 大模型设置弹窗（REQ-20260915-008：多厂商模型动态注册；REQ-20260916-001：协议 + 编辑）=====
@@ -1265,18 +1273,27 @@
 
   // 上传文件到我们自己的端点 — 用 XHR 拿进度事件，弹窗一直显示
   // 不用 Gradio 内置 /gradio_api/upload：那个端点用 python_multipart，并发会截断大文件
+  // REQ-20261106-003：保存当前 XHR 供「取消上传」按钮 abort；同一时间只允许一个上传
+  var slirnUploadXhr = null;
   function uploadFile(file) {
+    // 上一个还没结束（readyState 1=已连接 2=已收请求 3=上传中）→ 拒绝并发
+    if (slirnUploadXhr && slirnUploadXhr.readyState > 0 && slirnUploadXhr.readyState < 4) {
+      toast('已有上传进行中，请先点「取消上传」再重新选择', 'error');
+      return Promise.reject(new Error('已有上传进行中'));
+    }
     openUploadDialog(file);
     return new Promise(function(resolve, reject) {
       var fd = new FormData();
       fd.append('files', file);
       var xhr = new XMLHttpRequest();
+      slirnUploadXhr = xhr;
       xhr.open('POST', SLIRN_API + '/upload_video');
       xhr.upload.onprogress = function(e) {
         if (e.lengthComputable) setUploadProgress(e.loaded, e.total);
         else setUploadProgress(0, file.size);
       };
       xhr.onload = function() {
+        slirnUploadXhr = null;
         try {
           var j = JSON.parse(xhr.responseText);
           if (j && j.ok && j.path) {
@@ -1288,8 +1305,8 @@
           reject(new Error('Upload parse error: ' + parseErr));
         }
       };
-      xhr.onerror = function() { reject(new Error('网络错误，上传失败')); };
-      xhr.onabort = function() { reject(new Error('上传已取消')); };
+      xhr.onerror = function() { slirnUploadXhr = null; reject(new Error('网络错误，上传失败')); };
+      xhr.onabort = function() { slirnUploadXhr = null; reject(new Error('上传已取消')); };
       xhr.send(fd);
     });
   }
@@ -9234,7 +9251,7 @@
           handleResp(r, 'slirn-tab-create');
         }).catch(function(err) {
           closeUploadDialog();
-          toast('❌ 上传失败: ' + err, 'error');
+          uploadFailToast(err);
         });
       });
       document.body.appendChild(tmp);
@@ -9248,6 +9265,13 @@
     }
     else if (action === 'url-download-cancel') {
       cancelUrlDownload(target.getAttribute('data-job-id'));
+    }
+    // REQ-20261106-003：取消正在进行的视频上传（abort 后 onabort → reject，
+    // 弹窗由调用方 catch 统一关闭）
+    else if (action === 'upload-cancel') {
+      if (slirnUploadXhr) {
+        try { slirnUploadXhr.abort(); } catch (e) { /* 已结束的 abort 无害 */ }
+      }
     }
   });
 
@@ -9263,7 +9287,7 @@
       handleResp(r, 'slirn-tab-create');
     }).catch(function(err) {
       closeUploadDialog();
-      toast('❌ 上传失败: ' + err, 'error');
+      uploadFailToast(err);
     });
   }
 

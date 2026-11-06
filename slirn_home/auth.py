@@ -93,11 +93,25 @@ def _locked(fn):
 _SESSION_TTL_HOURS = 2.0
 _SESSION_TTL_S = _SESSION_TTL_HOURS * 3600
 
+# REQ-20261106-010：服务会话 — 自动流程内部回调用的长效凭证。
+# 用户的浏览器会话 2 小时过期是用户明确要求；但一条自动流程可能跑好几小时，
+# 若内部回调沿用用户会话，跑久了必然在"保存"那一步 401（实测 20261106-001
+# 跑了 66 分钟后死在 save_revision，不是 LLM 的问题）。
+# 服务会话三条语义：①不顶掉用户登录（用户重新登录不影响在跑的流程）；
+# ②归属仍是该用户（任务归属/权限校验照常）；③TTL 独立，按自己的 expires_at 判定。
+_SERVICE_SESSION_TTL_HOURS = 24.0
+
 
 def _session_alive(s: dict, now: float) -> bool:
-    """单条会话是否仍有效：expires_at 未到 且 创建未超 TTL。"""
+    """单条会话是否仍有效：expires_at 未到 且 创建未超 TTL。
+
+    服务会话（kind="service"）只按自己的 expires_at 判定 —— 它是内部流程凭证，
+    不受用户 2 小时 TTL 约束（否则长流程必挂）。
+    """
     if float(s.get("expires_at", 0)) < now:
         return False
+    if s.get("kind") == "service":
+        return True
     created = s.get("created_at", "")
     try:
         created_ts = time.mktime(time.strptime(created, "%Y-%m-%dT%H:%M:%S"))
@@ -289,15 +303,48 @@ class AuthStore:
         }
         # REQ-20261021-142：单会话 —— 同用户旧会话全部失效（后登踢前），
         # 只保留本次新会话。登录 / bootstrap 共用本方法，一处生效。
-        sessions = [s for s in sessions if s.get("username") != username] + [new]
+        # **服务会话例外**（REQ-20261106-010）：用户重新登录不能踢掉正在跑的
+        # 自动流程的服务会话 —— 那会让流程的内部回调立刻 401。
+        sessions = [s for s in sessions
+                    if s.get("username") != username or s.get("kind") == "service"] + [new]
+        _save_json(self.sessions_path, sessions)
+        return token
+
+    @_locked
+    def create_service_session(self, username: str,
+                               ttl_hours: float = _SERVICE_SESSION_TTL_HOURS) -> str:
+        """创建服务会话（自动流程内部回调专用）。
+
+        与用户会话的区别：①**不顶掉**用户登录（单会话逻辑只作用在用户会话上）；
+        ②归属仍是该用户（user_from_token 解析出同样的 username/权限）；
+        ③TTL 独立（默认 24h），不受用户 2 小时会话 TTL 约束。
+        """
+        sessions = _load_json(self.sessions_path, [])
+        # 先清一遍过期会话（含往期服务会话），避免 sessions.json 无限堆积
+        now0 = time.time()
+        sessions = [s for s in sessions if _session_alive(s, now0)]
+        token = secrets.token_hex(32)
+        now = time.time()
+        new = {
+            "token": token,
+            "username": username,
+            "kind": "service",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "expires_at": now + ttl_hours * 3600,
+        }
+        sessions.append(new)
         _save_json(self.sessions_path, sessions)
         return token
 
     def user_session_count(self, username: str) -> int:
-        """该用户当前有效会话数（登录日志「踢掉几个旧会话」用）。"""
+        """该用户当前有效**用户会话**数（登录日志「踢掉几个旧会话」用）。
+
+        服务会话不计入 —— 它不是登录会话（否则登录日志会莫名多出几条）。
+        """
         now = time.time()
         return sum(1 for s in _load_json(self.sessions_path, [])
                    if s.get("username") == username
+                   and s.get("kind") != "service"
                    and _session_alive(s, now))
 
     @_locked
