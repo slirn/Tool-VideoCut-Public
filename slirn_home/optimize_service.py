@@ -10,9 +10,18 @@ optimize_subtitle.json，阶段推进 FINE_SUBTITLE_REVIEWED。
 - **行集优先随片字幕直读**（rough_compose.srt 与优化输入行同源、时间轴已
   在成片坐标系，秒级）；SRT 缺失/行数与切分保留单元不一致时回落成片 ASR
   重识别（asr_service 同链路，sd=False；88 分钟片 CPU 上 10-20 分钟）
-- **断句整理**（2026-10-28）：行集先过一遍合并 — 一行 10~20 字、一句完整
-  的话或逗号连接的两小句、行尾无标点；LLM 提议分组，服务端保全校验
-  （去标点文字必须与原行拼接逐字一致），失败退回原行
+- **断句整理**（2026-10-28；2026-11-07 精简输出协议）：行集先过一遍合并
+  — 一行 10~20 字、一句完整的话或逗号连接的两小句、行尾无标点；LLM 对
+  无需合并的行只输出行 id 字符串、仅多行组输出 {ids, text}（旧协议全量
+  重发文本 ~130 tokens/行，248 行批必顶爆输出上限截断 → 减半重试风暴、
+  单批 6-11 分钟；新协议输出 ~1/9、行内逗号质量不损失），单行/兜底文本
+  由服务端拼接 + 标点规整，失败退回原行
+- **断点续传**（2026-11-07）：断句整理/提取逐批落盘 outputs/optimize_work/
+  （指纹 = 协议版本 + 模型 + 行集 sha1 校验），中断重跑只补缺失批；
+  成功落盘 optimize_subtitle.json 后整目录清理
+- **ASR 回落走窗口化识别**（2026-11-07）：直读不可用且成片 ≥600s 时经
+  asr_service._run_recognition_windowed（窗口级断点 + 进度），短音频保持
+  单发路径不变
 - 识别复用 asr_service 内部函数（模型单例 + 16k 单声道抽取），绝不写
   subtitle.json/srt —— 那是切分/修订全链路的根基产物
 - 替换是局部片段级：before 必须逐字摘自行文本、after ≠ before、重叠剔除
@@ -23,9 +32,12 @@ optimize_subtitle.json，阶段推进 FINE_SUBTITLE_REVIEWED。
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import re
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -652,17 +664,15 @@ MERGE_SYSTEM = (
     "  其他语言按等效阅读量把握（如英文约 5~12 个词）。\n"
     "- 完整性：一行必须是一句完整的话，或衔接紧密的两小句（两小句中间用一个中文逗号「，」分隔）；"
     "三小句以上不要塞进一行。\n"
-    "- 标点：行内只保留逗号（原有的句号/问号/叹号/分号改写为逗号或删去）；"
-    "行尾不得有任何标点（原有行尾标点一律删去）。\n"
     "- 停顿：gap_s ≥ 2.0 秒的相邻行不要合并（画面停顿处断行更自然）。\n"
-    "- 保真：除标点的增删改外不得增加、删除或改写任何文字——合并后去掉全部标点的文字，"
-    "必须与组内各行文字按顺序拼接的结果完全一致（语气词、疑似错别字都原样保留，"
-    "错别字由后续环节处理）。\n"
     "- 只能合并相邻的行；单行超过 20 字时保持原样（不要试图拆分）。\n\n"
-    "输出要求：只输出 JSON 数组，不要任何其他文字。数组按顺序完整覆盖输入的每一行恰好一次，"
-    "每项格式：\n"
-    '{"ids": ["行id", "行id"], "text": "合并并整理标点后的整行文本"}\n'
-    "无需合并、标点也无需改动的行也要输出（ids 只含它自身、text 为整理后的文本）。"
+    "输出要求：只输出 JSON 数组，不要任何其他文字。数组按顺序完整覆盖输入的每一行恰好一次：\n"
+    '- 无需合并的行：只输出该行 id 的字符串（如 "12"）— 单行不要输出文本，节省输出；\n'
+    '- 合并多行：输出对象 {"ids": ["行id", "行id"], "text": "合并并整理标点后的整行文本"}。\n'
+    "合并文本规则：行内只保留逗号（原有的句号/问号/叹号/分号改写为逗号或删去），"
+    "行尾不得有任何标点；除标点的增删改外不得增加、删除或改写任何文字——"
+    "去掉全部标点后必须与组内各行文字按顺序拼接完全一致（语气词、疑似错别字都原样保留，"
+    "错别字由后续环节处理）。"
 )
 
 # 句末点号 → 逗号（不含 ASCII 句点，防误伤 "3.5" 这类小数）
@@ -698,13 +708,17 @@ def _merge_singles(lines: list[dict]) -> list[dict]:
 
 
 def parse_merge_groups(raw: str, lines: list[dict]) -> list[dict]:
-    """防御式解析断句整理输出 → 按序合并方案（与服务端校验/兜底）。
+    """防御式解析断句整理输出 → 按序合并方案（精简输出协议，OPT_PROTO_VER=2）。
 
-    逐项前缀匹配：组内 id 必须从当前进度起与输入行序完全一致（只认相邻合并）；
-    组文本去标点后必须等于组内各行文本顺序拼接（去标点），否则用服务端
-    拼接 + _norm_line_punct 兜底（fallback:true）。无效项跳过、漏覆盖的
-    尾行按原行补齐 — 输出恒为「按序完整覆盖每一行恰好一次」的分组列表。
-    解析失败抛 ValueError（调用方减半重试）。
+    2026-11-07：旧协议（每项 {"ids","text"} 全量重发）实测 GLM-5.3 输出
+    ~130 tokens/行，248 行批必顶爆输出上限截断 → 减半重试风暴、单批
+    6-11 分钟。新协议：**单行组输出裸 id 字符串**（~6 tokens，服务端做
+    标点规整），**多行组输出 {"ids","text"}**（保真校验通过才采用；文本
+    缺失/被改写 → 服务端拼接 + _norm_line_punct 兜底，fallback:true）—
+    输出体积 ~1/9，行内逗号质量不损失。兼容裸 ["id", ...] 数组项（ids-only）。
+    逐项前缀匹配：组内 id 必须从当前进度起与输入行序完全一致（只认相邻
+    合并）；无效项跳过、漏覆盖的尾行按原行补齐 — 输出恒为「按序完整覆盖
+    每一行恰好一次」的分组列表。解析失败抛 ValueError（调用方减半重试）。
     """
     cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw or "").strip()
     start, end = cleaned.find("["), cleaned.rfind("]")
@@ -721,9 +735,18 @@ def parse_merge_groups(raw: str, lines: list[dict]) -> list[dict]:
     groups: list[dict] = []
     pos = 0
     for item in arr:
-        if pos >= len(lines) or not isinstance(item, dict):
+        if pos >= len(lines):
             continue
-        ids = item.get("ids")
+        text = None
+        if isinstance(item, str):          # 单行组：裸 id（服务端规整标点）
+            ids = [item]
+        elif isinstance(item, list):       # ids-only 组（防御：模型未给文本）
+            ids = item
+        elif isinstance(item, dict):       # 多行组：ids + text
+            ids = item.get("ids")
+            text = item.get("text")
+        else:
+            continue
         if not isinstance(ids, list) or not ids:
             continue
         id_strs = [str(x) for x in ids]
@@ -731,12 +754,17 @@ def parse_merge_groups(raw: str, lines: list[dict]) -> list[dict]:
         if k > len(lines) or [str(lines[j]["id"]) for j in range(pos, k)] != id_strs:
             continue  # 不相邻/越界/乱序 → 跳过该组（行留给兜底）
         texts = [str(lines[j].get("text", "")) for j in range(pos, k)]
-        text = _norm_line_punct(str(item.get("text") or ""))
-        ok = bool(strip(text)) and strip(text) == strip("".join(texts))
+        joined = "".join(texts)
+        use = _norm_line_punct(joined)
+        ok_text = False
+        if len(id_strs) > 1 and isinstance(text, str) and text.strip():
+            cand = _norm_line_punct(text)
+            if cand and strip(cand) == strip(joined):
+                use, ok_text = cand, True
         groups.append({
             "ids": id_strs,
-            "text": text if ok else _norm_line_punct("".join(texts)),
-            "fallback": not ok,
+            "text": use,
+            "fallback": len(id_strs) > 1 and not ok_text,
         })
         pos = k
     for j in range(pos, len(lines)):  # 模型漏覆盖的尾行 → 原行
@@ -746,13 +774,78 @@ def parse_merge_groups(raw: str, lines: list[dict]) -> list[dict]:
     return groups
 
 
+# =============== 断点续传（2026-11-07：断句整理/提取按批落盘） ===============
+# 两个 LLM 阶段都是「确定输入 → 确定分批 → 逐批调用」：批产物按指纹
+# （协议版本 + 模型 + 行集 sha1 + 阶段）校验后直接复用，重跑只补缺失批 —
+# DNS 瞬断 / 应用重启这类瞬时故障不再毁掉整个 job。成功落盘
+# optimize_subtitle.json 后整目录清理。
+OPT_WORK_NAME = "optimize_work"
+OPT_PROTO_VER = 2   # 断句整理输出协议版本（ids-only）；改提示词/解析 → +1
+
+
+def _write_json_atomic(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _lines_fp(lines: list[dict]) -> str:
+    """行集指纹：id:text 按序拼接 sha1 — 行集任何变化（回落重识别/整理
+    结果不同）都会使依赖它的批产物失效。行 id 兼容 'i'（segments 口径）
+    与 'id'（pack_batches 行口径）两种键名。"""
+    h = hashlib.sha1()
+    for ln in lines:
+        lid = ln.get("i", ln.get("id"))
+        h.update(f"{lid}:{ln.get('text', '')}".encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def _phase_fp(*parts) -> str:
+    h = hashlib.sha1()
+    for p in parts:
+        h.update(str(p).encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+def _batch_artifact(work_dir: Path | None, name: str, fp: str) -> dict | None:
+    """读取一个批产物；不存在/损坏/指纹不匹配 → None（调用方重算该批）。"""
+    if work_dir is None:
+        return None
+    p = work_dir / name
+    if not p.is_file():
+        return None
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — 损坏产物按缺失处理
+        return None
+    if not isinstance(d, dict) or d.get("fingerprint") != fp:
+        return None
+    return d
+
+
+def _save_batch(work_dir: Path | None, name: str, fp: str, payload: dict) -> None:
+    if work_dir is None:
+        return
+    try:
+        _write_json_atomic(work_dir / name, {"fingerprint": fp, **payload})
+    except OSError as e:
+        log.warning("批产物落盘失败（不影响本次结果）: %s", e)
+
+
 def _merge_segments_llm(
     segments: list[dict], entry: dict | None, task_id: str,
     on_stage: Callable[[str, float], None] | None = None,
+    work_dir: Path | None = None,
 ) -> tuple[list[dict], dict]:
     """并发跑断句整理批 → 重建行集（合并行时间跨度 = 首行起 ~ 末行止，
     tokens/token_ts 逐行拼接—— constituents 全带等长 token 才拼接，否则
-    整行不带（行内切分按比例降级，与直读路径同口径）。永不抛异常。"""
+    整行不带（行内切分按比例降级，与直读路径同口径）。永不抛异常。
+
+    work_dir 给定时逐批落盘/复用（断点续传）：指纹匹配的批直接采用，
+    只对缺失批发起 LLM；暂态失败（网络）的批不落盘 — 重跑只补它。"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     from slirn_home.revision_service import (
@@ -762,7 +855,8 @@ def _merge_segments_llm(
 
     n = len(segments)
     if n < 2:
-        return segments, {"before": n, "after": n, "merged": 0, "fallback": 0}
+        return segments, {"before": n, "after": n, "merged": 0, "fallback": 0,
+                          "reused": 0}
 
     lines: list[dict] = []
     prev_end: int | None = None
@@ -776,40 +870,64 @@ def _merge_segments_llm(
         })
         prev_end = max(prev_end or int(s["end_ms"]), int(s["end_ms"]))
 
-    def _one_safe(batch: list[dict]) -> list[dict]:
+    def _one_safe(batch: list[dict]) -> tuple[list[dict], bool]:
+        """返回 (分组方案, 是否可落盘复用)。解析类失败（减半到底/单行）是
+        收敛结果，可落盘；网络/服务端失败是暂态 — 保持原行但不落盘，重跑再试。"""
         try:
             raw = _call_llm(MERGE_SYSTEM, _merge_user_prompt(batch), entry,
                             max_tokens=effective_out_cap(entry), temperature=0.2,
                             usage_ctx={"task_id": task_id, "stage": "断句整理"})
-            return parse_merge_groups(raw, batch)
+            return parse_merge_groups(raw, batch), True
         except ValueError as e:
             if len(batch) == 1:
                 log.warning("[opt][%s] 断句整理批失败（%d 行保持原样）: %s",
                             task_id, len(batch), e)
-                return _merge_singles(batch)
+                return _merge_singles(batch), True
             mid = len(batch) // 2
             log.warning("[opt][%s] 断句整理批解析失败，减半重试（%d 行）: %s",
                         task_id, len(batch), e)
-            return _one_safe(batch[:mid]) + _one_safe(batch[mid:])
+            g1, ok1 = _one_safe(batch[:mid])
+            g2, ok2 = _one_safe(batch[mid:])
+            return g1 + g2, ok1 and ok2
         except Exception as e:  # noqa: BLE001 — 合并是增强，失败不阻塞
             log.warning("[opt][%s] 断句整理批失败（%d 行保持原样）: %s",
                         task_id, len(batch), e)
-            return _merge_singles(batch)
+            return _merge_singles(batch), False
 
     batches = pack_batches(lines, entry)
+    fp = _phase_fp("merge", OPT_PROTO_VER, (entry or {}).get("id") or "",
+                   _lines_fp(lines))
     results: list[list[dict] | None] = [None] * len(batches)
-    with ThreadPoolExecutor(
-        max_workers=max(1, min(_effective_workers(), len(batches))),
-        thread_name_prefix="opt-merge",
-    ) as pool:
-        futs = {pool.submit(_one_safe, b): i for i, b in enumerate(batches)}
-        done = 0
-        for fut in as_completed(futs):
-            results[futs[fut]] = fut.result()
-            done += 1
-            if on_stage:
-                on_stage(f"断句整理 ({done}/{len(batches)})",
-                         39.0 + done / len(batches) * 6.0)
+    reused = 0
+    for i in range(len(batches)):
+        art = _batch_artifact(work_dir, f"merge_{i:03d}.json", fp)
+        if art is not None and isinstance(art.get("groups"), list):
+            results[i] = art["groups"]
+            reused += 1
+    if reused:
+        log.info("[opt][%s] 断句整理复用 %d/%d 批（断点续传）",
+                 task_id, reused, len(batches))
+    missing = [i for i, r in enumerate(results) if r is None]
+    if missing:
+        with ThreadPoolExecutor(
+            max_workers=max(1, min(_effective_workers(), len(missing))),
+            thread_name_prefix="opt-merge",
+        ) as pool:
+            futs = {pool.submit(_one_safe, batches[i]): i for i in missing}
+            done = reused
+            for fut in as_completed(futs):
+                groups, ok = fut.result()
+                i = futs[fut]
+                results[i] = groups
+                if ok:  # 暂态失败批不落盘 — 重跑只补它
+                    _save_batch(work_dir, f"merge_{i:03d}.json", fp,
+                                {"groups": groups})
+                done += 1
+                if on_stage:
+                    on_stage(f"断句整理 ({done}/{len(batches)})",
+                             39.0 + done / len(batches) * 6.0)
+    elif on_stage:
+        on_stage(f"断句整理 ({len(batches)}/{len(batches)})", 45.0)
 
     by_id = {str(s["i"]): s for s in segments}
     out: list[dict] = []
@@ -837,7 +955,8 @@ def _merge_segments_llm(
                 seg["token_ts"] = [list(ts) for s in srcs for ts in s["token_ts"]]
             out.append(seg)
     return out, {"before": n, "after": len(out),
-                 "merged": merged_groups, "fallback": fallback_groups}
+                 "merged": merged_groups, "fallback": fallback_groups,
+                 "reused": reused}
 
 
 def start_job(
@@ -877,6 +996,14 @@ def start_job(
     def _run():
         job = _JOBS[task_id]
 
+        # 断点续传工作目录（批产物逐批落盘；成功落盘后整目录清理）
+        work_dir: Path | None = Path(outputs_dir) / OPT_WORK_NAME
+        try:
+            work_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            work_dir = None
+        reuse_stat = {"merge": 0, "extract": 0}
+
         def _stage(name: str, pct: float) -> None:
             job["stage"] = name
             job["progress"] = round(pct, 1)
@@ -903,8 +1030,27 @@ def start_job(
                          task_id, len(segments))
             else:
                 _stage("加载模型", 8.0)
-                _stage("识别粗剪成片", 15.0)
-                state = asr_service._run_recognition(str(video_path), hotword_str, False)
+                # 长音频走窗口化识别（窗口级断点续传 + 进度）；短音频保持单发
+                from slirn_home import asr_windows as _awin
+                duration = None
+                try:
+                    from tasklib.video import get_video_duration
+                    duration = get_video_duration(Path(video_path))
+                except Exception:  # noqa: BLE001 — 探不到时长按短音频走单发
+                    duration = None
+                if duration and duration >= _awin.WINDOW_MIN_DURATION_S:
+                    def _on_prog(stage: str, done: int, total: int) -> None:
+                        label = "识别粗剪成片" if stage == "识别中" else stage
+                        frac = min(1.0, done / total) if total else 0.0
+                        _stage(f"{label} ({done}/{total})", 15.0 + frac * 23.0)
+
+                    state, _resumed = asr_service._run_recognition_windowed(
+                        str(video_path), hotword_str, False, outputs_dir,
+                        _on_prog)
+                else:
+                    _stage("识别粗剪成片", 15.0)
+                    state = asr_service._run_recognition(
+                        str(video_path), hotword_str, False)
                 segments = asr_service.segments_from_sentences(state.get("sentences") or [])
                 if not segments:
                     raise RuntimeError("成片识别结果为空（无有效字幕行）")
@@ -939,7 +1085,11 @@ def start_job(
                 """并发跑批（与修订同口径）：撞限流时 _chat_completion 的
                 _pause_all 让各 worker 联动退避（发起前 _wait_pause），取代
                 原批间 sleep 0.6s。found 按行 id 归并，批序无关（落盘前
-                sorted(found, key=int) 统一排序）；确定性失败上抛终止 job（原语义）。"""
+                sorted(found, key=int) 统一排序）；确定性失败上抛终止 job（原语义）。
+
+                断点续传：批产物按（协议 + 模型 + 合并后行集 + strict 轮）
+                指纹校验复用，只对缺失批发起 LLM；成功批逐个落盘 — 中断重跑
+                只补缺失批。"""
                 from concurrent.futures import ThreadPoolExecutor, as_completed
 
                 from slirn_home.revision_service import _effective_workers
@@ -947,16 +1097,44 @@ def start_job(
                 found: dict[str, list[dict]] = {}
                 if not batches:
                     return found
-                with ThreadPoolExecutor(
-                        max_workers=max(1, min(_effective_workers(), len(batches))),
-                        thread_name_prefix="optimize") as pool:
-                    futs = [pool.submit(_analyze, b, strict) for b in batches]
-                    done = 0
-                    for fut in as_completed(futs):
-                        found.update(fut.result())
-                        done += 1
-                        _stage(f"大模型分析 ({done}/{len(batches)})" + ("·复检" if strict else ""),
-                               45 + done / len(batches) * 45)
+                fp = _phase_fp("extract", OPT_PROTO_VER,
+                               (entry or {}).get("id") or "",
+                               _lines_fp(lines), "strict" if strict else "first")
+                prefix = "extract_strict" if strict else "extract"
+                results: list[dict | None] = [None] * len(batches)
+                reused = 0
+                for i in range(len(batches)):
+                    art = _batch_artifact(work_dir, f"{prefix}_{i:03d}.json", fp)
+                    if art is not None and isinstance(art.get("found"), dict):
+                        results[i] = art["found"]
+                        reused += 1
+                if reused:
+                    log.info("[opt][%s] 大模型分析%s复用 %d/%d 批（断点续传）",
+                             task_id, "·复检" if strict else "", reused, len(batches))
+                    reuse_stat["extract"] += reused
+                missing = [i for i, r in enumerate(results) if r is None]
+                if missing:
+                    with ThreadPoolExecutor(
+                            max_workers=max(1, min(_effective_workers(), len(missing))),
+                            thread_name_prefix="optimize") as pool:
+                        futs = {pool.submit(_analyze, batches[i], strict): i
+                                for i in missing}
+                        done = reused
+                        for fut in as_completed(futs):
+                            res = fut.result()
+                            i = futs[fut]
+                            results[i] = res
+                            _save_batch(work_dir, f"{prefix}_{i:03d}.json", fp,
+                                        {"found": res})
+                            done += 1
+                            _stage(f"大模型分析 ({done}/{len(batches)})" + ("·复检" if strict else ""),
+                                   45 + done / len(batches) * 45)
+                else:
+                    _stage(f"大模型分析 ({len(batches)}/{len(batches)})" + ("·复检" if strict else ""),
+                           90.0)
+                for r in results:
+                    if r:
+                        found.update(r)
                 return found
 
             # ---- ①½ 断句整理：合并过碎行（一行 10~20 字、句尾无标点，2026-10-28）----
@@ -968,7 +1146,9 @@ def start_job(
                 try:
                     segments, merge_stat = _merge_segments_llm(
                         segments, entry, task_id,
-                        on_stage=lambda nm, pct: _stage(nm, pct))
+                        on_stage=lambda nm, pct: _stage(nm, pct),
+                        work_dir=work_dir)
+                    reuse_stat["merge"] = int(merge_stat.get("reused") or 0)
                     job["lines"] = len(segments)
                     log.info("[opt][%s] 断句整理：%d → %d 行（合并 %d 组，兜底 %d 组）",
                              task_id, merge_stat["before"], merge_stat["after"],
@@ -1024,6 +1204,8 @@ def start_job(
             (out_dir / OPTIMIZE_JSON).write_text(
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
             )
+            if work_dir is not None:  # 全部落盘成功 → 批产物目录完成使命
+                shutil.rmtree(work_dir, ignore_errors=True)
             job["occurrences"] = len(occurrences)
             job["state"] = "done"
             job["stage"] = "完成"
@@ -1036,7 +1218,9 @@ def start_job(
                 execution_history.patch_extra(outputs_dir, exec_id,
                                                 {"lines": len(segments),
                                                  "occurrences": len(occurrences),
-                                                 "words": len(data["words"])})
+                                                 "words": len(data["words"]),
+                                                 "merge_reused": reuse_stat["merge"],
+                                                 "extract_reused": reuse_stat["extract"]})
                 # REQ-20260919-075：完成时回填具体执行情况（行数 + 词数 + 出现次数）
                 execution_history.patch_fields(outputs_dir, exec_id, {
                     "description": (f"优化字幕保存：识别 {len(segments)} 行字幕，"
