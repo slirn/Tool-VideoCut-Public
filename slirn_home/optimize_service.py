@@ -10,12 +10,13 @@ optimize_subtitle.json，阶段推进 FINE_SUBTITLE_REVIEWED。
 - **行集优先随片字幕直读**（rough_compose.srt 与优化输入行同源、时间轴已
   在成片坐标系，秒级）；SRT 缺失/行数与切分保留单元不一致时回落成片 ASR
   重识别（asr_service 同链路，sd=False；88 分钟片 CPU 上 10-20 分钟）
-- **断句整理**（2026-10-28；2026-11-07 精简输出协议）：行集先过一遍合并
-  — 一行 10~20 字、一句完整的话或逗号连接的两小句、行尾无标点；LLM 对
-  无需合并的行只输出行 id 字符串、仅多行组输出 {ids, text}（旧协议全量
-  重发文本 ~130 tokens/行，248 行批必顶爆输出上限截断 → 减半重试风暴、
-  单批 6-11 分钟；新协议输出 ~1/9、行内逗号质量不损失），单行/兜底文本
-  由服务端拼接 + 标点规整，失败退回原行
+- **断句整理**（2026-10-28；2026-11-07 分组-only 协议 v3）：行集先过一遍合并
+  — 一行 10~20 字、一句完整的话或逗号连接的两小句、行尾无标点；LLM 只输出
+  分组（单行=裸 id 字符串、多行组={"ids":[…]}），**完全不输出文本**（v1 全量
+  重发文本 ~130 tokens/行、248 行批必顶爆输出上限截断 → 减半重试风暴；v2
+  让模型带 text，GLM-5.3 实测仍无视指令逐行重发 → 同样截断）。合并文本 =
+  服务端确定性拼接（逗号由行间停顿 gap_s≥0.5s 推导）+ 标点规整；模型附带
+  的 text 过保真校验则采用（守规矩的模型零损失），失败退回原行
 - **断点续传**（2026-11-07）：断句整理/提取逐批落盘 outputs/optimize_work/
   （指纹 = 协议版本 + 模型 + 行集 sha1 校验），中断重跑只补缺失批；
   成功落盘 optimize_subtitle.json 后整目录清理
@@ -662,17 +663,20 @@ MERGE_SYSTEM = (
     "合并规则：\n"
     "- 字数：一行中文 10~20 个字（不含标点）；已有 10~20 字且语义完整的行单独成行。\n"
     "  其他语言按等效阅读量把握（如英文约 5~12 个词）。\n"
-    "- 完整性：一行必须是一句完整的话，或衔接紧密的两小句（两小句中间用一个中文逗号「，」分隔）；"
-    "三小句以上不要塞进一行。\n"
+    "- 完整性：一行必须是一句完整的话，或衔接紧密的两小句；三小句以上不要塞进一行。\n"
     "- 停顿：gap_s ≥ 2.0 秒的相邻行不要合并（画面停顿处断行更自然）。\n"
     "- 只能合并相邻的行；单行超过 20 字时保持原样（不要试图拆分）。\n\n"
-    "输出要求：只输出 JSON 数组，不要任何其他文字。数组按顺序完整覆盖输入的每一行恰好一次：\n"
-    '- 无需合并的行：只输出该行 id 的字符串（如 "12"）— 单行不要输出文本，节省输出；\n'
-    '- 合并多行：输出对象 {"ids": ["行id", "行id"], "text": "合并并整理标点后的整行文本"}。\n'
-    "合并文本规则：行内只保留逗号（原有的句号/问号/叹号/分号改写为逗号或删去），"
-    "行尾不得有任何标点；除标点的增删改外不得增加、删除或改写任何文字——"
-    "去掉全部标点后必须与组内各行文字按顺序拼接完全一致（语气词、疑似错别字都原样保留，"
-    "错别字由后续环节处理）。"
+    "输出要求（务必遵守）：只输出 JSON 数组，数组按顺序完整覆盖输入的每一行恰好一次。"
+    "**只输出行 id，绝对不要输出任何字幕文字**：\n"
+    '- 单独成行的：只输出该行 id 的字符串，如 "12"；\n'
+    '- 合并多行的：只输出对象 {"ids": ["行id", "行id"]}，按原顺序列出组内全部行 id。\n'
+    "标点整理由服务端完成，你的输出中不需要也不应该出现任何文本。\n\n"
+    "示例（输入 6 行 → 输出）：\n"
+    '[{"id":"1","text":"大家好"},{"id":"2","text":"今天我们讲"},{"id":"3","text":"第一章的内容"},'
+    '{"id":"4","text":"很好理解"},{"id":"5","text":"接下来"},{"id":"6","text":"看第二章"}]\n'
+    '正确输出：[{"ids": ["1", "2", "3"]}, "4", {"ids": ["5", "6"]}]\n'
+    '错误输出（禁止）：[{"ids": ["1","2","3"], "text": "大家好，今天我们讲第一章的内容"}, …]'
+    "—— 带了 text 就违反要求。"
 )
 
 # 句末点号 → 逗号（不含 ASCII 句点，防误伤 "3.5" 这类小数）
@@ -693,6 +697,30 @@ def _norm_line_punct(text: str) -> str:
     return _MERGE_TRAIL_PUNCT.sub("", t)
 
 
+# 组内拼接插逗号的停顿阈值：行间 gap_s ≥ 此值视为小句边界（停顿≈逗号）
+_MERGE_GAP_COMMA_S = 0.5
+
+
+def _join_group_text(lines: list[dict], pos: int, k: int) -> str:
+    """组内原文确定性拼接（v3 协议：模型只报分组不报文本）。
+
+    行间 gap_s ≥ 0.5s 视为小句边界、拼接处插「，」，其余直接连排；
+    整段再过 _norm_line_punct（句末点号→逗号、叠逗号合一、行尾去标点）。
+    保真校验本就只允许模型动标点——文本内容恒等于组内原文拼接，
+    所以逗号位置由停顿推导，文本质量不依赖模型输出。"""
+    buf: list[str] = []
+    for j in range(pos, k):
+        if buf:
+            try:
+                gap = float(lines[j].get("gap_s") or 0)
+            except (TypeError, ValueError):
+                gap = 0.0
+            if gap >= _MERGE_GAP_COMMA_S:
+                buf.append("，")
+        buf.append(str(lines[j].get("text", "")))
+    return _norm_line_punct("".join(buf))
+
+
 def _merge_user_prompt(lines: list[dict]) -> str:
     """构造断句整理 user 消息：带时间信息（gap_s 供模型避开长停顿处合并）。"""
     return ("字幕行列表（start/end 为秒，gap_s 为与上一行的间隔）：\n" + json.dumps(
@@ -708,17 +736,19 @@ def _merge_singles(lines: list[dict]) -> list[dict]:
 
 
 def parse_merge_groups(raw: str, lines: list[dict]) -> list[dict]:
-    """防御式解析断句整理输出 → 按序合并方案（精简输出协议，OPT_PROTO_VER=2）。
+    """防御式解析断句整理输出 → 按序合并方案（分组-only 协议，OPT_PROTO_VER=3）。
 
-    2026-11-07：旧协议（每项 {"ids","text"} 全量重发）实测 GLM-5.3 输出
-    ~130 tokens/行，248 行批必顶爆输出上限截断 → 减半重试风暴、单批
-    6-11 分钟。新协议：**单行组输出裸 id 字符串**（~6 tokens，服务端做
-    标点规整），**多行组输出 {"ids","text"}**（保真校验通过才采用；文本
-    缺失/被改写 → 服务端拼接 + _norm_line_punct 兜底，fallback:true）—
-    输出体积 ~1/9，行内逗号质量不损失。兼容裸 ["id", ...] 数组项（ids-only）。
+    2026-11-07 真机教训：v2 让模型对多行组输出 text，GLM-5.3 实测无视
+    指令逐行重发全文（~130 tokens/行），248 行批必顶爆输出上限截断 →
+    减半重试风暴。v3 **只要分组、彻底不要文本**（输出 ~8 tokens/行，
+    截断物理上不可能）：合并文本 = _join_group_text 确定性拼接（逗号由
+    行间停顿 gap_s 推导）；模型若仍附带 text 且保真校验通过则采用
+    （对守规矩的模型零损失）。兼容项形态：裸 id 字符串 / ["id",…] 数组 /
+    {"ids":[…]} / {"ids","text"} / 旧式 {"id","text"} 单行（GLM 不守规矩
+    时的前缀链保护 — 接受它使后续分组仍可解析，而非整批跳过）。
     逐项前缀匹配：组内 id 必须从当前进度起与输入行序完全一致（只认相邻
-    合并）；无效项跳过、漏覆盖的尾行按原行补齐 — 输出恒为「按序完整覆盖
-    每一行恰好一次」的分组列表。解析失败抛 ValueError（调用方减半重试）。
+    合并）；无效项跳过、漏覆盖的尾行按原行补齐。解析失败抛 ValueError
+    （调用方减半重试）。
     """
     cleaned = re.sub(r"```(?:json)?\s*|\s*```", "", raw or "").strip()
     start, end = cleaned.find("["), cleaned.rfind("]")
@@ -742,9 +772,11 @@ def parse_merge_groups(raw: str, lines: list[dict]) -> list[dict]:
             ids = [item]
         elif isinstance(item, list):       # ids-only 组（防御：模型未给文本）
             ids = item
-        elif isinstance(item, dict):       # 多行组：ids + text
+        elif isinstance(item, dict):       # {"ids":[…]} / 旧式 {"id","text"}
             ids = item.get("ids")
             text = item.get("text")
+            if not isinstance(ids, list) and item.get("id") is not None:
+                ids, text = [item.get("id")], item.get("text")
         else:
             continue
         if not isinstance(ids, list) or not ids:
@@ -753,9 +785,8 @@ def parse_merge_groups(raw: str, lines: list[dict]) -> list[dict]:
         k = pos + len(id_strs)
         if k > len(lines) or [str(lines[j]["id"]) for j in range(pos, k)] != id_strs:
             continue  # 不相邻/越界/乱序 → 跳过该组（行留给兜底）
-        texts = [str(lines[j].get("text", "")) for j in range(pos, k)]
-        joined = "".join(texts)
-        use = _norm_line_punct(joined)
+        joined = "".join(str(lines[j].get("text", "")) for j in range(pos, k))
+        use = _join_group_text(lines, pos, k)
         ok_text = False
         if len(id_strs) > 1 and isinstance(text, str) and text.strip():
             cand = _norm_line_punct(text)
@@ -764,7 +795,9 @@ def parse_merge_groups(raw: str, lines: list[dict]) -> list[dict]:
         groups.append({
             "ids": id_strs,
             "text": use,
-            "fallback": len(id_strs) > 1 and not ok_text,
+            # fallback 语义收窄：仅「模型给了 text 但没过保真校验被弃用」—
+            # v3 正常路径（只要分组）不算 fallback
+            "fallback": len(id_strs) > 1 and text is not None and not ok_text,
         })
         pos = k
     for j in range(pos, len(lines)):  # 模型漏覆盖的尾行 → 原行
@@ -780,7 +813,7 @@ def parse_merge_groups(raw: str, lines: list[dict]) -> list[dict]:
 # DNS 瞬断 / 应用重启这类瞬时故障不再毁掉整个 job。成功落盘
 # optimize_subtitle.json 后整目录清理。
 OPT_WORK_NAME = "optimize_work"
-OPT_PROTO_VER = 2   # 断句整理输出协议版本（ids-only）；改提示词/解析 → +1
+OPT_PROTO_VER = 3   # 断句整理输出协议版本（分组-only，逗号由 gap 推导）；改提示词/解析 → +1
 
 
 def _write_json_atomic(path: Path, data: dict) -> None:
