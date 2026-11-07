@@ -556,6 +556,16 @@ def _wait_pause() -> None:
         time.sleep(t)
 
 
+def _glm_entry(entry: dict | None) -> bool:
+    """识别智谱 GLM 注册项（GLM-4.5+ 默认开启深度思考）。
+
+    厂商字段是用户自由文本不作依据；按模型 id 与 base_url 判断。
+    """
+    e = entry or {}
+    bid = f"{e.get('id', '')} {e.get('base_url', '')}".lower()
+    return "glm" in bid or "bigmodel" in bid or "zhipu" in bid
+
+
 def _chat_completion(entry: dict, messages: list[dict],
                      retries: int = 2, timeout: float = 180.0,
                      max_tokens: int | None = None,
@@ -612,6 +622,13 @@ def _chat_completion(entry: dict, messages: list[dict],
         # REQ-20261019-228：字幕断句整理要稳定复现，显式压温度；
         # None（默认）不传 → 其他调用方行为不变
         body["temperature"] = float(temperature)
+
+    if _glm_entry(entry):
+        # GLM-4.5+ 默认深度思考：思考 token 计入 completion_tokens——实测
+        # 124 行整理批思考即耗 1.9-2.6 万 token，把 32768 输出上限顶爆
+        # （截断→减半风暴），单次调用 3-5 分钟几乎全在生成思考。显式关闭，
+        # 思考预算归零，整理/修订类任务的输出只剩答案本身。
+        body["thinking"] = {"type": "disabled"}
 
     _t0 = time.time()
     last_err: Exception | None = None
