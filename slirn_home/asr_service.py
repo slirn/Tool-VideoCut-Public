@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Callable
 
 from slirn_home import execution_history
+from slirn_home import asr_windows as _awin
 from slirn_home.fftools import ffprobe_bin as _ffprobe_bin
 from slirn_home.paths import find_repo_root as _find_repo_root
 
@@ -379,6 +380,166 @@ def _run_recognition_subprocess(video_path: str, hotword_str: str, sd: bool) -> 
             raise RuntimeError(f"ASR 子进程结果解析失败: {e}") from None
 
 
+# =============== 窗口化识别（REQ-20261107-003：断点续传 + 段数进度） ===============
+
+# 并行 worker 数（进程）：每个 worker 独立加载 ASR 模型（~1.5-2GB），
+# 8GB 部署机建议 ≤2；1 = 串行（仅断点续传，不并行）。可被环境变量覆盖。
+_ASR_WINDOW_WORKERS = max(1, int(os.environ.get("SLIRN_ASR_WORKERS") or "1"))
+_POLL_INTERVAL_S = 3.0
+
+
+def _video_identity(video_path: Path) -> tuple[int, int]:
+    st = Path(video_path).stat()
+    return int(st.st_size), int(st.st_mtime_ns)
+
+
+def _count_valid_windows(work_dir: Path, fingerprint: str, windows: list[dict]) -> int:
+    return sum(1 for w in windows
+               if _awin.win_is_valid(_awin.win_path(work_dir, w["i"]), fingerprint))
+
+
+def _run_recognition_windowed(video_path: str, hotword_str: str, sd: bool,
+                              outputs_dir: Path,
+                              on_progress=None) -> tuple[dict, int]:
+    """窗口化识别（长音频）：阶段机在子进程里跑，本函数只做编排与轮询。
+
+    - 工作目录 ``outputs/asr_work/`` 持久化 ⇒ 中断重跑只补缺失窗口；
+    - 指纹（源视频身份 + 热词/SD/窗口参数）不匹配的旧工作目录整目录作废；
+    - 返回 (state, resumed_windows)：state 与 ``_run_recognition`` 同形状
+      （含 sentences），resumed_windows = 本次启动时已可直接复用的窗口数。
+    on_progress(stage: str, done: int, total: int) 在轮询线程上回调。
+    """
+    work_dir = Path(outputs_dir) / _awin.WORK_DIR_NAME
+    video_size, video_mtime_ns = _video_identity(Path(video_path))
+    fp = _awin.input_fingerprint(video_path, video_size, video_mtime_ns,
+                                 sd, hotword_str, _awin.WINDOW_SPAN_S)
+
+    # 指纹不匹配的旧工作目录（换了视频/热词/参数）整目录作废，防陈旧产物混用
+    old_req = _awin.read_json(work_dir / _awin.REQ_NAME)
+    if old_req and old_req.get("fingerprint") != fp:
+        import shutil
+
+        shutil.rmtree(work_dir, ignore_errors=True)
+        old_req = None
+    resumed = 0
+    if old_req:
+        old_win = _awin.read_json(work_dir / _awin.WINDOWS_JSON) or {}
+        windows = old_win.get("windows") or []
+        resumed = _count_valid_windows(work_dir, fp, windows)
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+    workers = _ASR_WINDOW_WORKERS
+    _awin.write_json_atomic(work_dir / _awin.REQ_NAME, {
+        "video": video_path, "video_size": video_size,
+        "video_mtime_ns": video_mtime_ns, "hotwords": hotword_str,
+        "sd": bool(sd), "fingerprint": fp,
+        "window_span_s": _awin.WINDOW_SPAN_S, "num_workers": workers,
+    })
+
+    repo_root = Path(__file__).resolve().parents[1]
+    env = dict(os.environ)
+    env.pop(_SUBPROCESS_ENV, None)  # pipeline worker 内部不走单发递归路径
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (str(repo_root), env.get("PYTHONPATH", "")) if p)
+
+    procs = []
+    for idx in range(workers):
+        out_log = (work_dir / f"worker_{idx}.log").open("wb")
+        procs.append({
+            "idx": idx, "log": out_log,
+            "popen": subprocess.Popen(
+                [sys.executable, "-m", "slirn_home.asr_worker", "--pipeline",
+                 "--work-dir", str(work_dir), "--idx", str(idx)],
+                stdout=out_log, stderr=subprocess.STDOUT,
+                env=env, cwd=str(repo_root)),
+        })
+    try:
+        failed = None
+        while True:
+            alive = 0
+            for p in procs:
+                rc = p["popen"].poll()
+                if rc is None:
+                    alive += 1
+                elif rc != 0 and failed is None:
+                    failed = p
+            if alive == 0:
+                break
+            if failed is not None:
+                # 一个 worker 失败立即终止其余（否则 worker 0 会干等缺失的窗口）
+                for p in procs:
+                    try:
+                        if p["popen"].poll() is None:
+                            p["popen"].kill()
+                    except Exception:  # noqa: BLE001
+                        pass
+                break
+            _report_window_progress(work_dir, on_progress)
+            time.sleep(_POLL_INTERVAL_S)
+        _report_window_progress(work_dir, on_progress)
+    finally:
+        for p in procs:
+            try:
+                if p["popen"].poll() is None:  # 兜底：父线程异常时不留孤儿
+                    p["popen"].kill()
+                p["log"].close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    bad = [p for p in procs if p["popen"].returncode not in (0,)]
+    if bad:
+        tail = ""
+        try:
+            tail = (work_dir / f"worker_{bad[0]['idx']}.log").read_text(
+                encoding="utf-8", errors="replace").strip()[-400:]
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"窗口化识别 worker {bad[0]['idx']} 失败（exit={bad[0]['popen'].returncode}）：{tail}")
+
+    state_path = work_dir / _awin.STATE_NAME
+    if not state_path.is_file():
+        raise RuntimeError("窗口化识别未产出 state.json")
+    try:
+        return json.loads(state_path.read_text(encoding="utf-8")), resumed
+    except ValueError as e:
+        raise RuntimeError(f"窗口化识别结果解析失败: {e}") from None
+
+
+def _report_window_progress(work_dir: Path, on_progress) -> None:
+    """汇总各 worker 心跳 → on_progress(stage, done, total)（结构化，文本由 job 侧组装）。
+
+    - 窗口阶段：stage="识别中"，done = 各心跳 done 求和，total = 总窗口数；
+    - SD 阶段：stage="说话人分离"，done/total 用 worker 0 心跳（嵌入块）；
+    - 其余阶段：原样透传 worker 0 的 stage 文本（提取音频/全局 VAD/完成）。
+    """
+    if on_progress is None:
+        return
+    heads = []
+    for idx in range(_ASR_WINDOW_WORKERS):
+        d = _awin.read_json(work_dir / _awin.PROGRESS_FMT.format(idx))
+        if d:
+            heads.append((idx, d))
+    if not heads:
+        return
+    by0 = dict(heads).get(0) or {}
+    stage = str(by0.get("stage") or "处理中")
+    done = total = 0
+    win = _awin.read_json(work_dir / _awin.WINDOWS_JSON) or {}
+    windows = win.get("windows") or []
+    if any("识别中" in str(h.get("stage")) for _, h in heads):
+        stage = "识别中"
+        done = sum(int(h.get("done") or 0) for _, h in heads)
+        total = len(windows)
+        done = min(done, total)
+    elif "说话人分离" in stage:
+        done, total = int(by0.get("done") or 0), int(by0.get("total") or 0)
+    try:
+        on_progress(stage, done, total)
+    except Exception as e:  # noqa: BLE001 — 进度回调失败不影响识别
+        log.warning("[asr] 进度回调失败: %s", e)
+
+
 # =============== 后台 job 管理 ===============
 
 # task_id → {"state": "running|done|error", "stage": str, "error": str|None,
@@ -449,10 +610,48 @@ def start_job(
             log.info("[asr][%s] %s", task_id, name)
 
         try:
-            _stage("加载模型")
             hotword_str = " ".join(w.strip() for w in hotwords if w and w.strip())
-            _stage("提取音频 → 识别中")
-            state = _run_recognition(str(video_path), hotword_str, sd)
+            # 长音频走窗口化（REQ-20261107-003：断点续传 + 已识别 N/M 窗口进度）；
+            # 短视频保持旧单发路径（行为零变化）。探测失败按旧路径兜底。
+            _duration = None
+            try:
+                from tasklib.video import get_video_duration
+
+                _duration = get_video_duration(Path(video_path))
+            except Exception:  # noqa: BLE001
+                _duration = None
+            use_windowed = bool(_duration and _duration >= _awin.WINDOW_MIN_DURATION_S)
+
+            _sync = [0.0, -1]
+
+            def _on_prog(stage: str, done: int, total: int) -> None:
+                if stage == "识别中":
+                    text = f"识别中 已识别 {done}/{total} 窗口"
+                    job["windows_done"], job["windows_total"] = done, total
+                elif stage == "说话人分离":
+                    text = f"说话人分离 {done}/{total} 块"
+                else:
+                    text = stage
+                _stage(text)
+                now = time.time()
+                if stage == "识别中" and (
+                        now - _sync[0] >= 5.0 or done != _sync[1]):
+                    _sync[0], _sync[1] = now, done
+                    try:
+                        execution_history.patch_extra(
+                            outputs_dir, exec_id,
+                            {"windows_done": done, "windows_total": total})
+                    except Exception:  # noqa: BLE001 — 日志失败不影响识别
+                        pass
+
+            resumed_windows = 0
+            if use_windowed:
+                state, resumed_windows = _run_recognition_windowed(
+                    str(video_path), hotword_str, sd, outputs_dir, _on_prog)
+            else:
+                _stage("加载模型")
+                _stage("提取音频 → 识别中")
+                state = _run_recognition(str(video_path), hotword_str, sd)
 
             _stage("保存结果")
             segments = segments_from_sentences(state.get("sentences") or [])
@@ -491,15 +690,25 @@ def start_job(
                     on_success(segments)
                 except Exception as e:  # noqa: BLE001 — 回调失败不影响结果
                     log.warning("[asr][%s] on_success 回调失败: %s", task_id, e)
-            # REQ-20260918-048：执行历史成功回填（extra 补 segments / speakers 统计）
+            # REQ-20260918-048：执行历史成功回填（extra 补 segments / speakers 统计；
+            # 窗口化路径补 engine / 复用窗口数，与粗剪合成的 reused_chunks 同思路）
             execution_history.patch_extra(outputs_dir, exec_id,
                                           {"segments": len(segments),
-                                           "speakers": len(stats) if stats else 0})
+                                           "speakers": len(stats) if stats else 0,
+                                           "engine": ("asr-windowed" if use_windowed
+                                                      else "asr-direct"),
+                                           "resumed_windows": resumed_windows,
+                                           "windows_total": job.get("windows_total") or 0})
             # REQ-20260919-075：完成时回填具体执行情况（带段数 / 说话人数）
             execution_history.patch_fields(outputs_dir, exec_id, {
                 "description": (f"FunASR 识别原始视频，共识别 {len(segments)} 段"
                                 + (f"，{len(stats)} 位说话人" if stats else ""))
             })
+            # 成功后清理窗口工作目录（断点只在失败/中断时保留供续跑）
+            if use_windowed:
+                import shutil
+
+                shutil.rmtree(outputs_dir / _awin.WORK_DIR_NAME, ignore_errors=True)
             execution_history.record_finish(outputs_dir, exec_id, success=True,
                                             error="")
         except SystemExit as e:  # 上游 video_recog 对无音频视频 sys.exit(1)

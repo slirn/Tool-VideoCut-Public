@@ -35,12 +35,25 @@ def _json_default(o):
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="ASR 识别子进程（slirn_home 内部用）")
-    ap.add_argument("--video", required=True, help="待识别视频路径")
+    ap.add_argument("--video", help="待识别视频路径（单发模式必填）")
     ap.add_argument("--hotwords", default="", help="热词（逗号分隔）")
     ap.add_argument("--sd", choices=("0", "1"), default="1", help="是否说话人分离")
-    ap.add_argument("--out", required=True, help="state JSON 输出路径")
+    ap.add_argument("--out", help="state JSON 输出路径（单发模式必填）")
+    # 窗口化模式（REQ-20261107-003）：输入/输出都走工作目录（request.json/state.json）
+    ap.add_argument("--pipeline", action="store_true", help="启用窗口化阶段机")
+    ap.add_argument("--work-dir", help="asr_work 工作目录（--pipeline 必填）")
+    ap.add_argument("--idx", type=int, default=0, help="worker 序号（0..N-1）")
     args = ap.parse_args(argv)
 
+    if args.pipeline:
+        if not args.work_dir:
+            ap.error("--pipeline 需要 --work-dir")
+        from slirn_home.asr_pipeline import run_pipeline
+
+        return run_pipeline(Path(args.work_dir), args.idx)
+
+    if not args.video or not args.out:
+        ap.error("单发模式需要 --video 与 --out")
     # 延迟 import：见模块 docstring
     from slirn_home import asr_service
 
