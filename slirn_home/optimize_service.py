@@ -856,7 +856,7 @@ def _merge_segments_llm(
     n = len(segments)
     if n < 2:
         return segments, {"before": n, "after": n, "merged": 0, "fallback": 0,
-                          "reused": 0}
+                          "reused": 0, "batches": 0}
 
     lines: list[dict] = []
     prev_end: int | None = None
@@ -924,10 +924,14 @@ def _merge_segments_llm(
                                 {"groups": groups})
                 done += 1
                 if on_stage:
-                    on_stage(f"断句整理 ({done}/{len(batches)})",
-                             39.0 + done / len(batches) * 6.0)
+                    # 统一「优化字幕」口径：done 是整个 LLM 阶段（断句整理
+                    # + 提取）的已完批数；此刻提取批数未定，分母按 ≈整理
+                    # 批数估计（提取阶段用真实总数，百分比连续不自相矛盾）。
+                    # 第二参数是 0~1 系数，由调用方映射到当前路径进度窗口。
+                    on_stage(f"优化字幕 ({done})",
+                             done / (len(batches) * 2.0))
     elif on_stage:
-        on_stage(f"断句整理 ({len(batches)}/{len(batches)})", 45.0)
+        on_stage(f"优化字幕 ({len(batches)})", 0.5)
 
     by_id = {str(s["i"]): s for s in segments}
     out: list[dict] = []
@@ -956,7 +960,7 @@ def _merge_segments_llm(
             out.append(seg)
     return out, {"before": n, "after": len(out),
                  "merged": merged_groups, "fallback": fallback_groups,
-                 "reused": reused}
+                 "reused": reused, "batches": len(batches)}
 
 
 def start_job(
@@ -1003,6 +1007,10 @@ def start_job(
         except OSError:
             work_dir = None
         reuse_stat = {"merge": 0, "extract": 0}
+        # 「优化字幕」LLM 阶段统一进度窗口（断句整理 + 提取共用一个计数器，
+        # 百分比 = base + 已完批/总批 * span）。直读路径 8→90；回落 ASR 时
+        # 识别已占 0~32，改为 32→88。复检轮占尾部 90~94。
+        llm_base, llm_span = 8.0, 82.0
 
         def _stage(name: str, pct: float) -> None:
             job["stage"] = name
@@ -1025,7 +1033,7 @@ def start_job(
                 log.warning("[opt][%s] 随片字幕直读失败，回落成片 ASR: %s", task_id, e)
             if segments:
                 job["lines"] = len(segments)
-                _stage("字幕行集就绪", 38.0)
+                _stage("字幕行集就绪", 7.0)
                 log.info("[opt][%s] 随片字幕直读：%d 行（跳过成片 ASR）",
                          task_id, len(segments))
             else:
@@ -1042,7 +1050,7 @@ def start_job(
                     def _on_prog(stage: str, done: int, total: int) -> None:
                         label = "识别粗剪成片" if stage == "识别中" else stage
                         frac = min(1.0, done / total) if total else 0.0
-                        _stage(f"{label} ({done}/{total})", 15.0 + frac * 23.0)
+                        _stage(f"{label} ({done}/{total})", 10.0 + frac * 22.0)
 
                     state, _resumed = asr_service._run_recognition_windowed(
                         str(video_path), hotword_str, False, outputs_dir,
@@ -1055,7 +1063,9 @@ def start_job(
                 if not segments:
                     raise RuntimeError("成片识别结果为空（无有效字幕行）")
                 job["lines"] = len(segments)
-                _stage("识别完成", 40.0)
+                _stage("识别完成", 32.0)
+                # 回落路径：LLM 阶段窗口整体后移（识别已占 0~32）
+                llm_base, llm_span = 32.0, 56.0
                 log.info("[opt][%s] 成片识别：%d 行", task_id, len(segments))
                 asr_source = "seaco-paraformer"
 
@@ -1097,6 +1107,13 @@ def start_job(
                 found: dict[str, list[dict]] = {}
                 if not batches:
                     return found
+                # 统一计数器：分母 = 断句整理批数 + 提取批数（整理批已完，
+                # 从 m_b 续起），百分比与 (d/N) 同源 — 用户看到的两个数字
+                # 恒一致。复检轮占尾部（llm_base+llm_span → 94）。
+                m_b = int((merge_stat or {}).get("batches") or 0)
+                total_all = m_b + len(batches)
+                lo = llm_base if not strict else llm_base + llm_span
+                hi = (llm_base + llm_span) if not strict else 94.0
                 fp = _phase_fp("extract", OPT_PROTO_VER,
                                (entry or {}).get("id") or "",
                                _lines_fp(lines), "strict" if strict else "first")
@@ -1127,11 +1144,13 @@ def start_job(
                             _save_batch(work_dir, f"{prefix}_{i:03d}.json", fp,
                                         {"found": res})
                             done += 1
-                            _stage(f"大模型分析 ({done}/{len(batches)})" + ("·复检" if strict else ""),
-                                   45 + done / len(batches) * 45)
+                            done_all = m_b + done
+                            _stage(f"优化字幕{' 复检' if strict else ''} "
+                                   f"({done_all}/{total_all})",
+                                   lo + done_all / total_all * (hi - lo))
                 else:
-                    _stage(f"大模型分析 ({len(batches)}/{len(batches)})" + ("·复检" if strict else ""),
-                           90.0)
+                    _stage(f"优化字幕{' 复检' if strict else ''} "
+                           f"({total_all}/{total_all})", hi)
                 for r in results:
                     if r:
                         found.update(r)
@@ -1142,11 +1161,14 @@ def start_job(
             # 合并由 LLM 提议、服务端保全校验，失败退回原行（不阻塞）。
             merge_stat = None
             if len(segments) >= 2:
-                _stage("断句整理", 39.0)
+                _stage("优化字幕", llm_base)
                 try:
                     segments, merge_stat = _merge_segments_llm(
                         segments, entry, task_id,
-                        on_stage=lambda nm, pct: _stage(nm, pct),
+                        # on_stage 第二参数为 0~1 系数（提取批数未定，
+                        # 由这里映射到统一进度窗口）
+                        on_stage=lambda nm, frac: _stage(
+                            nm, llm_base + frac * llm_span),
                         work_dir=work_dir)
                     reuse_stat["merge"] = int(merge_stat.get("reused") or 0)
                     job["lines"] = len(segments)
@@ -1165,7 +1187,7 @@ def start_job(
             # 复检一轮显著降低「点了开始却什么都没提出来」的概率（仍零则视为确实干净）。
             if not found and len(lines) >= 5:
                 log.info("[opt][%s] 首轮零发现，严格复检一轮（%d 行）", task_id, len(lines))
-                _stage("零发现复检", 92.0)
+                _stage("优化字幕 复检", llm_base + llm_span)
                 found = _analyze_all(strict=True)
 
             # ---- ③ 落盘（出现项默认全部"待采纳"，applied=True 待人工改判；

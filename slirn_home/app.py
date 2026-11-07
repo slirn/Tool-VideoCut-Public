@@ -10044,7 +10044,7 @@ def _register_slirn_api(
         )
         if not started:
             return _ok("", toast="⏳ 该任务已在优化中，请等待完成")
-        return _ok("", toast="✨ 优化字幕已开始（直读随片字幕 → 断句整理 → 大模型分析，可离开本页）",
+        return _ok("", toast="✨ 优化字幕已开始（可离开本页，完成后自动刷新）",
                    job={"state": "running", "stage": "准备字幕行集"})
 
     @app.app.post("/slirn/api/optimize_subtitle_status")
