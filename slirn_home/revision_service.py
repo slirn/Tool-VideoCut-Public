@@ -556,14 +556,24 @@ def _wait_pause() -> None:
         time.sleep(t)
 
 
-def _glm_entry(entry: dict | None) -> bool:
-    """识别智谱 GLM 注册项（GLM-4.5+ 默认开启深度思考）。
+def _thinking_off_params(entry: dict | None) -> dict:
+    """按模型族返回「关闭深度思考」的请求参数（统一出口，换模型不改执行路径）。
 
-    厂商字段是用户自由文本不作依据；按模型 id 与 base_url 判断。
+    GLM（GLM-4.5+ 默认思考，思考 token 计入 completion_tokens——实测 124 行
+    整理批思考即耗 1.9-2.6 万、顶爆 32768 截断）→ thinking={"type":"disabled"}，
+    openai/anthropic 两协议同形，智谱端点实测接受；
+    qwen3（百炼，默认思考）→ enable_thinking=False；
+    其余家族默认即关，不传参数（避免未知端点拒绝）。参数若被端点拒绝，
+    _chat_completion 降级重试，绝不因该参数中断执行。
     """
     e = entry or {}
-    bid = f"{e.get('id', '')} {e.get('base_url', '')}".lower()
-    return "glm" in bid or "bigmodel" in bid or "zhipu" in bid
+    mid = str(e.get("id", "")).lower()
+    bid = f"{mid} {e.get('base_url', '')}".lower()
+    if "glm" in bid or "bigmodel" in bid or "zhipu" in bid:
+        return {"thinking": {"type": "disabled"}}
+    if "qwen3" in bid:
+        return {"enable_thinking": False}
+    return {}
 
 
 def _chat_completion(entry: dict, messages: list[dict],
@@ -623,12 +633,10 @@ def _chat_completion(entry: dict, messages: list[dict],
         # None（默认）不传 → 其他调用方行为不变
         body["temperature"] = float(temperature)
 
-    if _glm_entry(entry):
-        # GLM-4.5+ 默认深度思考：思考 token 计入 completion_tokens——实测
-        # 124 行整理批思考即耗 1.9-2.6 万 token，把 32768 输出上限顶爆
-        # （截断→减半风暴），单次调用 3-5 分钟几乎全在生成思考。显式关闭，
-        # 思考预算归零，整理/修订类任务的输出只剩答案本身。
-        body["thinking"] = {"type": "disabled"}
+    _think = _thinking_off_params(entry)
+    _think_keys = tuple(_think)
+    if _think:
+        body.update(_think)
 
     _t0 = time.time()
     last_err: Exception | None = None
@@ -650,7 +658,15 @@ def _chat_completion(entry: dict, messages: list[dict],
             raise
         except ValueError:
             raise  # 其他输出质量问题：同批重试无意义，直接交上层减半
-        except LLMBusinessError:
+        except LLMBusinessError as be:
+            stripped = [k for k in _think_keys if body.pop(k, None) is not None]
+            if stripped:
+                # 思考关闭参数被端点拒绝（400 类业务错误）→ 剥掉降级重试：
+                # 换任何模型都不能让该参数中断执行；代价是此模型可能开着
+                # 思考，输出预算按截断兜底（上层减半）消化
+                log.warning("[llm] %s 端点拒绝思考关闭参数，已降级不传重试: %s",
+                            entry.get("id"), str(be)[:160])
+                continue
             raise  # 确定性业务失败（欠费/Key 无效等）：重试同样失败，直接上抛
         except Exception as e:  # noqa: BLE001 — httpx 异常类型不稳定
             last_err = e
