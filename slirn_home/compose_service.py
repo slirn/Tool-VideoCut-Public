@@ -387,6 +387,8 @@ def _compose_ffmpeg_chunked(src: Path, merged_ms: list[list[int]], dst: Path,
         "elapsed": round(time.time() - t0, 1),
         "engine": "ffmpeg-chunked",
         "chunks": res.get("chunks"),
+        # 断点续传复用块数 —— 不透传的话执行日志的「续跑复用 N 块」永远是空
+        "reused_chunks": res.get("reused_chunks"),
     }
 
 
