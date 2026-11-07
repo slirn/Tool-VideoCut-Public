@@ -354,7 +354,7 @@ def _compose_ffmpeg_chunked(src: Path, merged_ms: list[list[int]], dst: Path,
     chunk_tmp = dst.with_name(dst.stem + ".chunk.tmp.mp4")
     res = _chunked.compose_chunked(
         src, merged_ms, chunk_tmp, has_audio=has_audio,
-        work_dir=dst.parent / (dst.stem + "_chunkwork"),
+        work_dir=dst.parent / _chunked.WORK_DIR_NAME,
         on_progress=on_progress,
         bounds_s=plan.bounds_s if plan else None,
         grid=plan.grid if plan else None,
@@ -498,6 +498,74 @@ def _compose_ffmpeg(src: Path, merged_ms: list[list[int]], dst: Path,
     }
 
 
+class _ProgressAdapter:
+    """粗剪合成的进度适配器 —— 把「段数」作为进度的一等公民。
+
+    背景（2026-11-07 用户反馈）：合成进度条一开始就显示「3580/3580」这种
+    数字，看着像**已经完成**，其实那只是输入总段数。真正该显示的是
+    「已合成多少条」。
+
+    三条实现路径的进度语义不同，统一到这里：
+    - 分块路径：能精确报出已完成段数（``seg_done`` 直接给出）；
+    - 单图 / moviepy 路径：只有帧/时长进度 ⇒ 按「已合成时长占比 × 总段数」
+      估算段数（同一时刻各段长度不同 ⇒ 是估算，标 seg_exact=False）。
+
+    对外回调形态：``cb(pct)`` 或 ``cb(pct, seg_done, seg_total)`` 都接受
+    （用签名探测决定），保证既有调用方不用改。
+    """
+
+    def __init__(self, cb, n_segments: int, total_keep_ms: int):
+        self._cb = cb
+        self.n_segments = max(1, int(n_segments))
+        self.total_keep_ms = max(1, int(total_keep_ms))
+        self.seg_done = 0
+        self.seg_exact = False
+        self._three_arg = self._supports_three_args(cb)
+
+    @staticmethod
+    def _supports_three_args(cb) -> bool:
+        """探测回调是否接受 3 个参数（老回调只收 pct）。"""
+        if cb is None:
+            return False
+        try:
+            import inspect
+            sig = inspect.signature(cb)
+            n = 0
+            for p in sig.parameters.values():
+                if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD):
+                    n += 1
+                elif p.kind == p.VAR_POSITIONAL:
+                    return True
+            return n >= 3
+        except (TypeError, ValueError):
+            return False
+
+    def emit(self, pct: float, seg_done: int | None = None,
+             seg_total: int | None = None) -> None:
+        """上报进度。seg_done 给出 ⇒ 精确段数；否则按时长占比估算。"""
+        if self._cb is None:
+            return
+        if seg_done is not None:
+            self.seg_done = int(seg_done)
+            self.seg_exact = True
+            total = int(seg_total or self.n_segments)
+        else:
+            frac = max(0.0, min(1.0, (float(pct) - 5.0) / 94.0))
+            self.seg_done = int(round(frac * self.n_segments))
+            total = self.n_segments
+        try:
+            if self._three_arg:
+                self._cb(float(pct), self.seg_done, total)
+            else:
+                self._cb(float(pct))
+        except Exception as e:  # noqa: BLE001 — 进度回调异常不能影响合成
+            log.debug("[compose] 进度回调异常: %s", e)
+
+    def __call__(self, pct, seg_done=None, seg_total=None) -> None:
+        """让适配器本身可调用 —— 下游把它当 on_progress 回调直接传。"""
+        self.emit(pct, seg_done, seg_total)
+
+
 def compose_rough_cut(
     src: Path,
     intervals_ms: list[tuple[int, int]],
@@ -546,12 +614,17 @@ def compose_rough_cut(
     # ---- 快路径（2026-10-28）：ffmpeg 单趟 trim+concat（优化成片同机制）。
     # 纯掐段拼接无需 moviepy 的 Python 逐帧管道，实测 ~4×；帧精确 + A/V 时长
     # 复核。任何异常回落下面的上游 moviepy 老路（保底永远可用）。
+    #
+    # on_progress 契约（2026-11-07）：可调用 (pct) 或 (pct, seg_done, seg_total)。
+    # 分块路径能精确报出「已合成到第几段」；单图/moviepy 路径只有帧进度，
+    # 段数按已用时长占比估算。统一封成 _ProgressAdapter 向下传。
+    prog = _ProgressAdapter(on_progress, len(merged_ms), total_keep_ms)
+
     try:
-        if on_progress:
-            on_progress(3.0)
+        prog.emit(3.0)
         return _compose_ffmpeg(src, merged_ms, dst, lines, raw_n=raw_n,
                                total_keep_ms=total_keep_ms,
-                               on_progress=on_progress, t0=time.time())
+                               on_progress=prog, t0=time.time())
     except Exception as e:  # noqa: BLE001 — 快路径只许快，不许拦路
         log.warning("[compose] ffmpeg 快路径失败，回落上游 moviepy 合成: %s", e)
         for p in dst.parent.glob(dst.stem + ".tmp.mp4"):
@@ -569,11 +642,10 @@ def compose_rough_cut(
         now = time.time()
         if now - last_tick >= 0.5:  # 节流 ≤2Hz
             last_tick = now
-            on_progress(5.0 + pct * 0.94)  # 预热 5% + 编码映射到 5-99
+            prog.emit(5.0 + pct * 0.94)  # 预热 5% + 编码映射到 5-99
 
     t0 = time.time()
-    if on_progress:
-        on_progress(2.0)
+    prog.emit(2.0)
     # ---- 临时给 VideoClip.write_videofile 注入进度 logger（锁内安全） ----
     _orig_wvf = VideoClip.write_videofile
     frame_logger = _FrameProgressLogger(_on_frame)
@@ -707,21 +779,48 @@ def start_compose(task_id: str, video_path: Path, intervals_ms: list[tuple[int, 
         _JOBS[task_id] = {
             "state": "running", "progress": 0.0, "error": None,
             "started_at": time.time(), "finished_at": None, "result": None,
+            # 段数进度（前端显示「已合成 N/M 段」用）
+            "segments_done": 0, "segments_total": len(intervals_ms),
         }
 
     # REQ-20260918-048：执行历史（落盘，单写锁）
     outputs_dir = dst.parent
     exec_id = execution_history.record_start(
         outputs_dir, execution_history.KIND_ROUGH_COMPOSE,
-        extra={"intervals": len(intervals_ms), "lines": len(lines)},
+        # segments_total = **总**段数（不是已完成数）—— 前端按 segments_done/
+        # segments_total 渲染「已合成 N/M 段」，别把总数当进度显示
+        extra={"segments_total": len(intervals_ms), "intervals": len(intervals_ms),
+               "lines": len(lines)},
         auto=auto,
         auto_session_id=auto_session_id)
 
     def _run():
         job = _JOBS[task_id]
+        _last_log_sync = 0.0
+        _last_log_sync_seg = 0
 
-        def _tick(pct: float) -> None:
+        def _tick(pct: float, seg_done: int | None = None,
+                  seg_total: int | None = None) -> None:
             job["progress"] = round(pct, 1)
+            # 进度要显示「已合成多少条」—— 2026-11-07 用户反馈：只显示总段数
+            # （3580/3580）看着像已经完成。段数取自分块路径的精确计数。
+            if seg_done is not None:
+                job["segments_done"] = int(seg_done)
+                job["segments_total"] = int(seg_total or 0)
+            elif seg_total is not None:
+                job["segments_total"] = int(seg_total)
+            # 节流回写执行日志（每 5 秒或每 ≥50 段一次）——
+            # 执行日志面板是静态快照，不回写就永远停在 0/N
+            now = time.time()
+            if (now - _last_log_sync >= 5.0 or
+                    (seg_done is not None and seg_done - _last_log_sync_seg >= 50)):
+                _last_log_sync = now
+                if seg_done is not None:
+                    _last_log_sync_seg = seg_done
+                execution_history.patch_extra(
+                    outputs_dir, exec_id,
+                    {"segments_done": int(job["segments_done"]),
+                     "segments_total": int(job["segments_total"])})
 
         try:
             result = compose_rough_cut(video_path, intervals_ms, dst, lines, on_progress=_tick)
@@ -732,7 +831,9 @@ def start_compose(task_id: str, video_path: Path, intervals_ms: list[tuple[int, 
             log.info("[compose][%s] 完成：%s 段 → %s", task_id, result["segments"], dst.name)
             execution_history.patch_extra(outputs_dir, exec_id,
                                           {"segments": result.get("segments"),
-                                           "output": dst.name})
+                                           "output": dst.name,
+                                           "segments_done": result.get("segments"),
+                                           "reused_chunks": result.get("reused_chunks")})
             # REQ-20260919-075：完成时回填具体执行情况（段数 + 输出文件 + 合成时长）
             n_seg = result.get("segments") or 0
             execution_history.patch_fields(outputs_dir, exec_id, {

@@ -22,11 +22,18 @@ split=2579 的 filter 图跑了 **80 分钟**。根因不是编码本身，而�
 单图 133.7s → 分块 102.6s；段数越多差距越大（80 分钟级场景的正解）。
 
 与单图路径产物口径一致：帧精确（trim+setpts 重编码）、A/V 时长复核、
-随片 SRT 副产物一致。块产物落在任务临时目录，合成结束即清理。
+随片 SRT 副产物一致。
+
+断点续传（2026-11-07）：合成中途异常/进程被杀后重跑，应跳过已完成的块。
+块产物落在**持久化**工作目录 ``<outputs>/rough_compose_work/``，配一份
+``checkpoint.json``（记录输入指纹 + 已完成块清单）；重跑时指纹一致就复用
+已完成的块，只补跑缺失的块。指纹变了（换了切分方案/源文件变了）则全部重来。
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 import os
@@ -44,10 +51,68 @@ DEFAULT_CHUNK_SEGMENTS = 64
 # 块输入窗口两端各留一点余量（秒）：避免 -ss 落在关键帧边界时首段丢帧
 _WINDOW_PAD_SEC = 2.0
 
+# 断点续传：持久化工作目录名（放在任务 outputs 下）与断点文件名
+WORK_DIR_NAME = "rough_compose_work"
+CHECKPOINT_NAME = "checkpoint.json"
+
 
 def _ffmpeg() -> str:
     from slirn_home.compose_service import ffmpeg_bin
     return ffmpeg_bin()
+
+
+def input_fingerprint(src: Path, merged_ms: list[list[int]],
+                      chunk_segments: int, has_audio: bool) -> str:
+    """输入指纹 —— 决定断点能否复用。
+
+    覆盖：源文件（路径 + 大小 + mtime）、保留区间序列、块大小、是否有音轨。
+    任何一项变了 → 指纹变 → 旧块产物作废（否则会拼出错乱的成片）。
+    """
+    h = hashlib.sha1()
+    try:
+        st = Path(src).stat()
+        h.update(f"{Path(src).resolve()}|{st.st_size}|{int(st.st_mtime)}".encode())
+    except OSError:
+        h.update(f"{src}|missing".encode())
+    h.update(f"|g={chunk_segments}|a={int(bool(has_audio))}|n={len(merged_ms)}".encode())
+    for s, e in merged_ms:
+        h.update(f"|{int(s)},{int(e)}".encode())
+    return h.hexdigest()
+
+
+def _chunk_is_valid(path: Path, expect_dur_ms: int | None = None) -> bool:
+    """块产物是否可用（断点续传复用前的校验）。
+
+    复用前必须确认：文件在、大小合理、**能被 ffprobe 读出时长**。
+    断点文件是「上一轮写的」，而上一轮可能正好在写这个块时被 kill ——
+    那种块文件是半截的，直接拼进成片会得到损坏产物（甚至 concat 直接失败）。
+    """
+    try:
+        st = path.stat()
+    except OSError:
+        return False
+    if st.st_size < 1024:
+        return False
+    try:
+        # 用 ffprobe（不是 ffmpeg）—— -show_entries 是 ffprobe 的选项
+        from slirn_home.fftools import ffprobe_bin
+        r = subprocess.run(
+            [ffprobe_bin(), "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=60)
+        if r.returncode != 0:
+            return False
+        dur = float((r.stdout or "").strip())
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+    if dur <= 0:
+        return False
+    if expect_dur_ms is not None and expect_dur_ms > 0:
+        # 允许 1 秒容差（容器时间基取整）
+        if abs(dur * 1000 - expect_dur_ms) > 1000:
+            return False
+    return True
 
 
 def plan_chunks(merged_ms: list[list[int]],
@@ -153,6 +218,11 @@ def compose_chunked(src: Path, merged_ms: list[list[int]], dst: Path, *,
     bounds_s / grid: **帧栅格对齐**的段边界（秒，绝对源时间）与源帧栅格。
     给出时：块窗口起点也取帧栅格上的时刻（相对偏移因此落在同一栅格上），
     段内音视频等长 ⇒ concat 不补空隙、总时长 = Σ帧数×帧长 可精确预期。
+
+    on_progress(pct, segments_done, segments_total): pct 0-100；
+    segments_done/total 是**已合成的段数**（不是时长估算）—— 进度按段数
+    汇报才是用户真正关心的「合成了多少条」（2026-11-07 用户反馈：
+    日志里「3580/3580」这种数字看着像已完成，其实是输入总数）。
     """
     from slirn_home import asr_service
 
@@ -163,18 +233,49 @@ def compose_chunked(src: Path, merged_ms: list[list[int]], dst: Path, *,
     tmp = dst.with_name(dst.stem + ".chunk.tmp.mp4")
     work = Path(work_dir) if work_dir else tmp.parent
     work.mkdir(parents=True, exist_ok=True)
-    chunk_dir = work / (dst.stem + "_chunks")
-    if chunk_dir.exists():
-        shutil.rmtree(chunk_dir, ignore_errors=True)
+    chunk_dir = work / "chunks"
     chunk_dir.mkdir(parents=True, exist_ok=True)
 
     chunks = plan_chunks(merged_ms, chunk_segments)
     total_keep_ms = sum(e - s for s, e in merged_ms)
+    n_segments = len(merged_ms)
     t0 = time.time()
-    produced: list[Path] = []
     aligned = bounds_s is not None and grid is not None
     if aligned:
         pad_frames = int(math.ceil(_WINDOW_PAD_SEC / grid.fd))
+
+    # ---- 断点续传：载入断点，指纹一致才复用已完成的块 ----
+    fp = input_fingerprint(src, merged_ms, chunk_segments, has_audio)
+    ckpt_path = work / CHECKPOINT_NAME
+    done_chunks: dict[str, dict] = {}
+    if ckpt_path.is_file():
+        try:
+            ck = json.loads(ckpt_path.read_text(encoding="utf-8"))
+            if ck.get("fingerprint") == fp:
+                done_chunks = {k: v for k, v in (ck.get("chunks") or {}).items()
+                               if isinstance(v, dict)}
+            else:
+                log.info("[compose-chunked] 输入指纹变化，断点作废（重跑全部块）")
+        except (OSError, json.JSONDecodeError):
+            done_chunks = {}
+    if done_chunks:
+        log.info("[compose-chunked] 断点续传：复用 %d/%d 个已完成块",
+                 len(done_chunks), len(chunks))
+
+    def _save_ckpt():
+        """原子写断点文件（写一半被 kill 也不至于污染断点）。"""
+        try:
+            tmp_ck = ckpt_path.with_suffix(".json.tmp")
+            tmp_ck.write_text(json.dumps(
+                {"fingerprint": fp, "chunks": done_chunks,
+                 "total_segments": n_segments, "total_chunks": len(chunks)},
+                ensure_ascii=False), encoding="utf-8")
+            tmp_ck.replace(ckpt_path)
+        except OSError as e:
+            log.warning("[compose-chunked] 断点写入失败: %s", e)
+
+    produced: list[Path] = []
+    reused = 0
     try:
         for ci, (i0, i1) in enumerate(chunks):
             segs = merged_ms[i0:i1]
@@ -196,6 +297,22 @@ def compose_chunked(src: Path, merged_ms: list[list[int]], dst: Path, *,
                 win_end = segs[-1][1] + int(_WINDOW_PAD_SEC * 1000)
                 win_dur = win_end - win_start
             out = chunk_dir / f"chunk{i0:06d}.mp4"
+            key = str(i0)
+
+            # 已完成且产物有效 → 跳过重算（断点续传）
+            rec = done_chunks.get(key)
+            if rec and _chunk_is_valid(out, sum(e - s for s, e in segs)):
+                produced.append(out)
+                reused += 1
+                done_ms = sum(e - s for s, e in merged_ms[:i1])
+                if on_progress:
+                    on_progress(5.0 + (done_ms / max(1, total_keep_ms)) * 88.0,
+                                i1, n_segments)
+                continue
+            if rec:
+                # 断点记录在但产物缺失/损坏 → 作废该块，重算
+                log.info("[compose-chunked] 块 %s 产物缺失或损坏，重算", key)
+
             cmd = build_chunk_cmd(src, out, segs, win_start, win_dur,
                                   has_audio=has_audio, bounds_s=blk_bounds,
                                   win_start_s=win_start_s, win_dur_s=win_dur_s)
@@ -206,15 +323,30 @@ def compose_chunked(src: Path, merged_ms: list[list[int]], dst: Path, *,
                     f"块 {ci + 1}/{len(chunks)} 合成失败（退出码 {r.returncode}）: "
                     f"{(r.stderr or '')[-300:]}")
             produced.append(out)
+            # 每块完成即落断点 —— 中途被杀也不丢已完成的块
+            done_chunks[key] = {"i1": i1, "size": out.stat().st_size}
+            _save_ckpt()
             if on_progress:
                 done_ms = sum(e - s for s, e in merged_ms[:i1])
-                on_progress(5.0 + (done_ms / max(1, total_keep_ms)) * 88.0)
+                on_progress(5.0 + (done_ms / max(1, total_keep_ms)) * 88.0,
+                            i1, n_segments)
         # 字节拼接（不重编码）
         _concat_copy(produced, tmp, chunk_dir)
         if on_progress:
-            on_progress(96.0)
+            on_progress(96.0, n_segments, n_segments)
     finally:
-        shutil.rmtree(chunk_dir, ignore_errors=True)
+        # 成功才清理工作目录；失败/中断保留（下次续跑）
+        if tmp.is_file() and len(produced) == len(chunks):
+            shutil.rmtree(chunk_dir, ignore_errors=True)
+            try:
+                ckpt_path.unlink()
+            except OSError:
+                pass
+            if work_dir is not None:
+                try:
+                    work.rmdir()
+                except OSError:
+                    pass
         if work_dir is not None:
             # 清理空的工作目录（调用方给的），别在任务 outputs 里留空壳
             try:
@@ -228,4 +360,5 @@ def compose_chunked(src: Path, merged_ms: list[list[int]], dst: Path, *,
         "segments": len(merged_ms),
         "tmp": tmp,
         "total_keep_ms": total_keep_ms,
+        "reused_chunks": reused,
     }

@@ -1831,12 +1831,14 @@
       var j = s.job;
       if (j.state !== 'running') return;
       var pct = Math.max(1, Math.min(99, Math.round(j.progress || 0)));
+      var segTxt0 = j.segments_total
+        ? ' · 已合成 ' + (j.segments_done || 0) + '/' + j.segments_total + ' 段' : '';
       btn.textContent = '🎬 合成中… ' + pct + '%';
       btn.disabled = true;
       var _st = document.getElementById('slirn-rc-status');
       if (_st) {
         _st.style.display = '';
-        _st.textContent = '⏳ 合成进行中 ' + pct + '%（页面刷新后自动接续）— 完成后此处自动显示预览';
+        _st.textContent = '⏳ 合成进行中 ' + pct + '%' + segTxt0 + '（页面刷新后自动接续）— 完成后此处自动显示预览';
       }
       rcWatchJob(tid, btn);
     });
@@ -2095,13 +2097,22 @@
       var duration = _formatLogsDuration(it.duration_ms);
       var extra = it.extra || {};
       var extraBits = [];
-      if (extra.lines) extraBits.push(extra.lines + ' 行');
-      if (extra.occurrences) extraBits.push(extra.occurrences + ' 处');
-      if (extra.segments) extraBits.push(extra.segments + ' 段');
-      if (extra.intervals) extraBits.push(extra.intervals + ' 区间');
+      // 粗剪合成（2026-11-07）：进行中显示「已合成 N/M 段」——
+      // 之前直接显示 extra.segments（完成时才回填）/ extra.intervals（=总段数），
+      // 于是刚开始就出现「3580 区间」这种像已完成进度的数字。
+      if (extra.segments_total && status === 'running') {
+        var doneSeg = extra.segments_done || 0;
+        extraBits.push('已合成 ' + doneSeg + '/' + extra.segments_total + ' 段');
+      } else {
+        if (extra.lines) extraBits.push(extra.lines + ' 行');
+        if (extra.occurrences) extraBits.push(extra.occurrences + ' 处');
+        if (extra.segments) extraBits.push(extra.segments + ' 段');
+        if (extra.intervals) extraBits.push(extra.intervals + ' 区间');
+      }
       if (extra.del_speakers_count) extraBits.push('删除 ' + extra.del_speakers_count + ' 说话人');
       if (extra.speakers) extraBits.push(extra.speakers + ' 位说话人');
       if (extra.output_mb) extraBits.push(extra.output_mb + ' MB');
+      if (extra.reused_chunks) extraBits.push('续跑复用 ' + extra.reused_chunks + ' 块');
       var extraStr = extraBits.length ? ' · ' + extraBits.join(' / ') : '';
       var errHtml = it.error
         ? '<div class="slirn-exec-err">' + escapeHtml(String(it.error).slice(0, 300)) + '</div>'
@@ -3475,8 +3486,13 @@
         var j = s.job;
         if (j.state === 'running') {
           var pct = Math.max(1, Math.min(99, Math.round(j.progress || 0)));
+          // 显示「已合成 N/M 段」—— 总段数看着像已完成进度（2026-11-07 用户反馈）
+          var segTxt = '';
+          if (j.segments_total) {
+            segTxt = ' · 已合成 ' + (j.segments_done || 0) + '/' + j.segments_total + ' 段';
+          }
           setBtn('🎬 合成中… ' + pct + '%', true);
-          show('⏳ 合成进行中 ' + pct + '% — 可继续其它操作，完成后此处自动显示预览');
+          show('⏳ 合成进行中 ' + pct + '%' + segTxt + ' — 可继续其它操作，完成后此处自动显示预览');
           return;
         }
         clearInterval(btn._rcTimer); btn._rcTimer = null;
