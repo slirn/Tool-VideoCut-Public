@@ -772,6 +772,11 @@ def start_compose(task_id: str, video_path: Path, intervals_ms: list[tuple[int, 
     REQ-20260919-075：auto 透传到 execution_history。
     REQ-20260920-081：auto_session_id 透传，同一次自动流的多次操作共用 session_id。
     """
+    # 段数口径统一用**合并后**的段数（compose_rough_cut 内部也按它分批）——
+    # 若这里用未合并的 intervals_ms 数（3580），而分块路径上报合并后的数（2134），
+    # 进度分母会在第一次回调时突变 ⇒ 进度条看起来倒退。
+    n_merged_segments = len(merge_intervals_ms(intervals_ms))
+
     with _JOBS_LOCK:
         existing = _JOBS.get(task_id)
         if existing and existing.get("state") == "running":
@@ -780,7 +785,7 @@ def start_compose(task_id: str, video_path: Path, intervals_ms: list[tuple[int, 
             "state": "running", "progress": 0.0, "error": None,
             "started_at": time.time(), "finished_at": None, "result": None,
             # 段数进度（前端显示「已合成 N/M 段」用）
-            "segments_done": 0, "segments_total": len(intervals_ms),
+            "segments_done": 0, "segments_total": n_merged_segments,
         }
 
     # REQ-20260918-048：执行历史（落盘，单写锁）
@@ -789,7 +794,8 @@ def start_compose(task_id: str, video_path: Path, intervals_ms: list[tuple[int, 
         outputs_dir, execution_history.KIND_ROUGH_COMPOSE,
         # segments_total = **总**段数（不是已完成数）—— 前端按 segments_done/
         # segments_total 渲染「已合成 N/M 段」，别把总数当进度显示
-        extra={"segments_total": len(intervals_ms), "intervals": len(intervals_ms),
+        extra={"segments_total": n_merged_segments,
+               "intervals": len(intervals_ms),
                "lines": len(lines)},
         auto=auto,
         auto_session_id=auto_session_id)
