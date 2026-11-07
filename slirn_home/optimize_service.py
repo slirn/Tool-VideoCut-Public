@@ -961,10 +961,10 @@ def _merge_segments_llm(
                     # + 提取）的已完批数；此刻提取批数未定，分母按 ≈整理
                     # 批数估计（提取阶段用真实总数，百分比连续不自相矛盾）。
                     # 第二参数是 0~1 系数，由调用方映射到当前路径进度窗口。
-                    on_stage(f"优化字幕 ({done})",
+                    on_stage(f"优化字幕 ({done}/{len(batches) * 2})",
                              done / (len(batches) * 2.0))
     elif on_stage:
-        on_stage(f"优化字幕 ({len(batches)})", 0.5)
+        on_stage(f"优化字幕 ({len(batches)}/{len(batches) * 2})", 0.5)
 
     by_id = {str(s["i"]): s for s in segments}
     out: list[dict] = []
