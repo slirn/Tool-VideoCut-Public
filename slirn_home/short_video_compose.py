@@ -178,6 +178,41 @@ def _validate_layout_rects(layout: dict) -> None:
                 f"画布范围内再渲染")
 
 
+def _detect_video_slot(params: dict) -> dict | None:
+    """红框(视频**应该**展现的槽位)来源 —— 与「✅ 填充到参数区域」同源：
+    ① ai_layout_result.regions 的视频类型区域；② 像素检测 detected_region
+    在 AI 未填视频组、或检出面积 ≥25% 画布（置信）时覆盖（与填充逻辑
+    REQ-20261019-211 同口径）。只读不写、异常返回 None（红框退化用配置
+    区域兜底），检测数据陈旧不影响渲染。"""
+    try:
+        from slirn_home import short_video_bg_detect as _bg
+        ai = params.get("ai_layout_result")
+        filled: dict[str, dict] = {}
+        if isinstance(ai, dict):
+            filled, _shape = _bg._ai_region_map(ai.get("regions") or [])
+        region = params.get("detected_region")
+        if isinstance(region, dict) and region:
+            pw = int(region.get("width") or region.get("w") or 0)
+            ph = int(region.get("height") or region.get("h") or 0)
+            if "video" not in filled:
+                if pw > 0 and ph > 0:
+                    filled["video"] = {"x": int(region.get("x") or 0),
+                                       "y": int(region.get("y") or 0),
+                                       "w": pw, "h": ph}
+            elif pw * ph >= _bg._PIXEL_VIDEO_MIN_AREA:
+                filled["video"] = {"x": int(region.get("x") or 0),
+                                   "y": int(region.get("y") or 0),
+                                   "w": pw, "h": ph}
+        v = filled.get("video")
+        if v and int(v.get("w") or 0) > 0 and int(v.get("h") or 0) > 0:
+            return {"x": max(0, int(v.get("x") or 0)),
+                    "y": max(0, int(v.get("y") or 0)),
+                    "w": int(v["w"]), "h": int(v["h"])}
+    except Exception:  # noqa: BLE001 — 红框只是调试辅助，识别异常不拦渲染
+        return None
+    return None
+
+
 def _video_actual_rect(spec: "ComposeSpec") -> dict | None:
     """主视频在成片画布上的**实际**显示矩形（与 overlay 表达式同口径复算）。
 
@@ -735,6 +770,10 @@ class ComposeSpec:
     src_w: int = 0                          # 源视频像素宽（0=未知，蓝框跳过）
     src_h: int = 0
     video_actual_rect: dict | None = None   # 主视频实际落位（复算 overlay 几何）
+    # REQ-20261108 语义修订：红框=视频**应该**展现的槽位（与「✅填充到参数
+    # 区域」同源的识别结果：AI regions 视频组 + 像素检测置信覆盖）；
+    # 无识别结果时渲染层回退到配置区域。蓝框=实际落位。两框重合=参数对准
+    video_target_rect: dict | None = None
     bgm_path: Path | None = None
     volume_db: float = -6.0
     fade_in: float = 0.5
@@ -1146,7 +1185,7 @@ def _atomic_render(spec: ComposeSpec, out_path: Path, work_dir: Path) -> float:
     border_png: Path | None = None
     if spec.debug_borders:
         rects: list[tuple[dict, tuple, int]] = [
-            (spec.video_rect, _DEBUG_RED, 14)]
+            (spec.video_target_rect or spec.video_rect, _DEBUG_RED, 14)]
         if spec.video_actual_rect:
             rects.append((spec.video_actual_rect, _DEBUG_BLUE, 6))
         border_png = work_dir / f"borders_{int(time.time() * 1000) % 100000}.png"
@@ -1335,6 +1374,7 @@ def resolve_compose_spec(root: Path, project: dict, index: int, *,
     if spec.debug_borders:
         spec.src_w, spec.src_h = _ffprobe_dims(video_path)
         spec.video_actual_rect = _video_actual_rect(spec)
+        spec.video_target_rect = _detect_video_slot(params)
 
     # 字幕事件映射。REQ-20261018-184：字幕区域未勾选 → 只跳过**烧录**
     # （ass_events 不加），导出的精剪切分（segments）仍按字幕时间轴算——
