@@ -1900,7 +1900,7 @@ def _stage6_fine(project: dict) -> str:
         f'<span class="slirn-fine-fit-hint">'
         f'勾选后预览/成片上画两个虚线框：红框 = 视频区域参数配置的位置，'
         f'蓝框 = 视频实际落位；改位置/裁剪参数后重新预览，两框随参数移动'
-        f'即为生效'
+        f'即为生效；调试完导出成片前，请先手动取消勾选'
         f'</span>'
         f'</div>'
     )
