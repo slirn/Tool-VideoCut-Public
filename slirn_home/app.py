@@ -2818,7 +2818,7 @@ def _render_fine_cut_zone(task_id: str, t, mgr: TaskManager) -> str:
         f'</div>'
         f'<div class="slirn-fine-bg-detect-actions">'
         f'<button class="slirn-btn" data-action="fine-bg-detect-apply" '
-        f'data-task-id="{_esc(task_id)}" title="把白色区域应用到 video：X/Y=区域左上角，区域宽高=检测值（红框），裁剪从原视频(0,0)取同尺寸，缩放=区域宽/1920（裁剪视频恰好铺满区域，红蓝重合为理想起点）">'
+        f'data-task-id="{_esc(task_id)}" title="把白色区域应用到 video：X/Y=区域左上角，区域宽高=检测值（红框），裁剪宽高同步为区域宽高（宽高同时设置，无法保证 16:9 → 自动取消「锁定 16:9」），缩放=区域宽/1920，填充后红蓝重合（匹配 100%）为理想起点">'
         f'✅ 填充到视频位置和裁剪</button>'
         f'</div>'
         f'</div>'

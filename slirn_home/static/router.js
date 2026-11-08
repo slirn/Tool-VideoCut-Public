@@ -4551,6 +4551,16 @@
           }
           if (n) n.value = String(val);
         }
+        // REQ-20261108-003 用户反馈：填充要同时写裁剪宽和高（=区域宽高），
+        // 而「锁定 16:9」的联动 handler 直接绑在裁剪滑块 input 上 —— 锁定开着时
+        // 写宽会把高拉回 16:9、写高又把宽拉回去，填充值被冲掉（实测停在
+        // 1652×929 这类 16:9 稳定值）。宽高同时设置时无法保证 16:9 →
+        // 填充前先自动取消勾选（并持久化），填充后保持未勾选状态。
+        var lockToggle = document.getElementById('slirn-fine-crop-aspect-link');
+        if (lockToggle && lockToggle.checked) {
+          lockToggle.checked = false;
+          lockToggle.dispatchEvent(new Event('change', { bubbles: true }));
+        }
         var fillScale = Math.round((r.width / 1920) * 10000) / 10000;
         _setSlider('slirn-fine-video-x', r.x);
         _setSlider('slirn-fine-video-y', r.y);
@@ -4564,7 +4574,7 @@
 
         // 注意：填充只改滑块显示值，不落库、不设 viewport 限定 —
         // 用户手工微调后点「保存全部设置」时按调整值原样保存。
-        toast('✅ 已填充：区域 (' + r.x + ', ' + r.y + ') ' + r.width + '×' + r.height + '（红框），裁剪从 (0,0) 取同尺寸，缩放 ' + fillScale.toFixed(4) + ' 恰好铺满区域；可手工调整后保存', 'success');
+        toast('✅ 已填充：区域 (' + r.x + ', ' + r.y + ') ' + r.width + '×' + r.height + '（红框），裁剪同步为 ' + r.width + '×' + r.height + '，缩放 ' + fillScale.toFixed(4) + '，已自动取消「锁定 16:9」（红蓝重合起点）；可手工调整后保存', 'success');
       });
     }
   }
