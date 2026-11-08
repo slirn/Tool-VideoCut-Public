@@ -4435,6 +4435,21 @@
     var algoSel = document.getElementById('slirn-fine-bg-detect-algo');
     var thSel = document.getElementById('slirn-fine-bg-detect-threshold-sel');
     var thNum = document.getElementById('slirn-fine-bg-detect-threshold-num');
+    // REQ-20261108-004：页面已显示检测结果（后端持久化缓存，刷新后仍在）时，
+    // 「填充」应直接可用，不再要求重新检测 —— 初始化时从服务端嵌入的缓存
+    // JSON 恢复上次结果。此前 _bgDetectLastResult 只在本次页面点过检测后
+    // 才有值，刷新即空 → 结果显示着、点填充却弹「请先点检测」。
+    if (!_bgDetectLastResult) {
+      var cacheEl = document.getElementById('slirn-fine-bg-detect-cache');
+      if (cacheEl) {
+        try {
+          var cached = JSON.parse(cacheEl.textContent);
+          if (cached && cached.width > 0 && cached.height > 0) {
+            _bgDetectLastResult = cached;
+          }
+        } catch (e) { /* 缓存 JSON 异常 → 维持原行为：先检测再填充 */ }
+      }
+    }
     var thRow = document.getElementById('slirn-fine-bg-detect-threshold-row');
     if (!detectBtn) return;
 

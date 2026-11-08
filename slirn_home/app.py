@@ -2747,6 +2747,19 @@ def _render_fine_cut_zone(task_id: str, t, mgr: TaskManager) -> str:
     else:
         _bg_status_badge = '<span class="slirn-fine-section-status">⚠️ 未检测</span>'
 
+    # REQ-20261108-004：把持久化检测结果序列化成 JSON 嵌进页面 —— 页面刷新后
+    # 「填充」直接可用，不再要求重新检测（此前填充只读前端内存变量，刷新即空，
+    # 结果区却显示着持久化缓存）
+    try:
+        _cache_json = json.dumps(
+            {"x": _cache_x, "y": _cache_y,
+             "width": _cache_w, "height": _cache_h,
+             "center_x": _cache_cx, "center_y": _cache_cy,
+             "corners": _cache_corners if isinstance(_cache_corners, dict) else {}},
+            ensure_ascii=False)
+    except (TypeError, ValueError):
+        _cache_json = "null"
+
     bg_detect_block = (
         f'<div class="slirn-fine-bg-detect-block">'
         # v12 用户反馈：「背景图主色」那个大色块看不出有什么用（结果区已含坐标/宽高，
@@ -2821,6 +2834,9 @@ def _render_fine_cut_zone(task_id: str, t, mgr: TaskManager) -> str:
         f'data-task-id="{_esc(task_id)}" title="把白色区域应用到 video：X/Y=区域左上角，区域宽高=检测值（红框），裁剪宽高同步为区域宽高（宽高同时设置，无法保证 16:9 → 自动取消「锁定 16:9」），缩放=区域宽/1920，填充后红蓝重合（匹配 100%）为理想起点">'
         f'✅ 填充到视频位置和裁剪</button>'
         f'</div>'
+        # REQ-20261108-004：把持久化检测结果嵌给前端（_cache_json 在上方计算）——
+        # 页面刷新后「填充」直接可用，不再要求重新检测
+        f'<script type="application/json" id="slirn-fine-bg-detect-cache">{_cache_json}</script>'
         f'</div>'
         # REQ-20260921-NNN：AI 智能识别布局按钮从顶部操作栏移到此处；
         # 必须有参考图（reference 素材），AI 对参考图做视觉识别，自动给出布局建议。
