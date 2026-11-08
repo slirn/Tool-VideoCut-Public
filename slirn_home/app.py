@@ -2192,9 +2192,24 @@ def _render_fine_cut_zone(task_id: str, t, mgr: TaskManager) -> str:
         scale_auto_btn = (
             f'<button class="slirn-btn slirn-btn-xs slirn-fine-scale-auto-btn" '
             f'data-action="fine-scale-auto" '
-            f'title="把视频缩放自动设为 crop_w / 1920（即视频原裁剪宽度占背景图片宽度的百分比）">'
-            f'🎯 按裁剪宽度</button>'
+            f'title="{_esc("把视频缩放自动设为 区域宽/1920（裁剪视频恰好铺满区域宽度）；区域宽未设置(0)时回退为 裁剪宽/1920")}">'
+            f'🎯 按区域宽度</button>'
         ) if mat_key == "video" else ''
+        # REQ-20261108-002 用户口径：视频区域有自己的宽高（独立参数 region_w/h，
+        # 如背景检测出的 1587×996）——红=区域（X/Y+宽高），蓝=实际视频摆放尺寸，
+        # 匹配度=蓝填满红的程度。仅 video 块有这两个参数。
+        region_params = ""
+        if mat_key == "video":
+            region_params = (
+                _fine_param(
+                    "区域宽（0–3840）", "slirn-fine-video-region_w",
+                    "video.region_w", int(lc.get("region_w") or 0), 0, 3840, 1, "{:d}",
+                )
+                + _fine_param(
+                    "区域高（0–2160）", "slirn-fine-video-region_h",
+                    "video.region_h", int(lc.get("region_h") or 0), 0, 2160, 1, "{:d}",
+                )
+            )
         params_html = (
             f'<div class="slirn-fine-params">'
             + _fine_param(
@@ -2205,6 +2220,7 @@ def _render_fine_cut_zone(task_id: str, t, mgr: TaskManager) -> str:
                 f"Y（-{_FINE_DESIGN_H}–{_FINE_DESIGN_H}）", f"slirn-fine-{mat_key}-y",
                 f"{mat_key}.y", int(lc["y"]), -_FINE_DESIGN_H, _FINE_DESIGN_H, 1, "{:d}",
             )
+            + region_params
             + _fine_param(
                 # REQ-20260919-062 v6 用户反馈：视频缩放精度 5% → 1%。
                 # v16 用户反馈：视频缩放值要显示 4 位小数（与 v15 自动重算保留 4 位一致）。
@@ -2237,6 +2253,19 @@ def _render_fine_cut_zone(task_id: str, t, mgr: TaskManager) -> str:
                 _disp_h = int(round(_disp_w * _crop_h / _crop_w)) if _crop_w > 0 else 0
             except (TypeError, ValueError):
                 _disp_w, _disp_h, _crop_w, _crop_h = 0, 0, 0, 0
+            try:
+                _reg_w = int(lc.get("region_w") or 0)
+                _reg_h = int(lc.get("region_h") or 0)
+            except (TypeError, ValueError):
+                _reg_w, _reg_h = 0, 0
+            # REQ-20261108-002 用户口径：红=视频区域（X/Y + region_w×region_h，
+            # 如背景检测出的 1587×996），蓝=裁剪视频缩放后的实际摆放尺寸
+            # （1920×scale 与渲染同一公式），匹配度 = 蓝填满红的程度。
+            # region 未设置(<=0) → 红回退为蓝（旧任务兼容，匹配恒 100%）。
+            _red_w = _reg_w if _reg_w > 0 else _disp_w
+            _red_h = _reg_h if _reg_h > 0 else _disp_h
+            _match_w = round(_disp_w / _red_w * 100, 1) if _red_w > 0 else 100.0
+            _match_h = round(_disp_h / _red_h * 100, 1) if _red_h > 0 else 100.0
             _scale_pct = round(float(lc["scale"]) * 100, 4)
             # 背景图整个区域 = 设计空间 1920×1080；百分比按此计算
             _bg_w, _bg_h = 1920, 1080
@@ -2244,15 +2273,18 @@ def _render_fine_cut_zone(task_id: str, t, mgr: TaskManager) -> str:
             _crop_h_pct = round(_crop_h / _bg_h * 100, 2) if _bg_h else 0
             info_html = (
                 f'<div class="slirn-fine-video-info" id="slirn-fine-video-info">'
-                f'📐 显示尺寸: '
-                f'<strong id="slirn-fine-video-disp-w">{_disp_w}</strong> × '
+                f'🟥 区域 '
+                f'<strong id="slirn-fine-video-red-w">{_red_w}</strong>×'
+                f'<strong id="slirn-fine-video-red-h">{_red_h}</strong> px'
+                f'（X/Y 定位）'
+                f'　|　🟦 实际视频 '
+                f'<strong id="slirn-fine-video-disp-w">{_disp_w}</strong>×'
                 f'<strong id="slirn-fine-video-disp-h">{_disp_h}</strong> px'
+                f'　|　🎯 匹配 '
+                f'宽<span id="slirn-fine-video-match-w">{_match_w:.1f}</span>%'
+                f' × 高<span id="slirn-fine-video-match-h">{_match_h:.1f}</span>%'
                 # REQ-20260919-062 v16：缩放百分比也显示 4 位小数（与滑块/auto-recompute 一致）。
                 f'　|　🎞 缩放 <span id="slirn-fine-video-scale-pct">{_scale_pct:.4f}</span>%'
-                f'　|　📊 宽高比 '
-                f'<span id="slirn-fine-video-aspect">'
-                f'{(_disp_h / _disp_w) if _disp_w > 0 else 0:.3f}'
-                f'</span>'
                 f'　|　📏 占背景图 '
                 f'<span id="slirn-fine-video-crop-w-pct">{_crop_w_pct:.2f}</span>'
                 f'×<span id="slirn-fine-video-crop-h-pct">{_crop_h_pct:.2f}</span>%'
@@ -2786,7 +2818,7 @@ def _render_fine_cut_zone(task_id: str, t, mgr: TaskManager) -> str:
         f'</div>'
         f'<div class="slirn-fine-bg-detect-actions">'
         f'<button class="slirn-btn" data-action="fine-bg-detect-apply" '
-        f'data-task-id="{_esc(task_id)}" title="把白色区域应用到 video：X/Y=区域左上角，crop=从原视频(0,0)取区域宽高，scale=1.0，并把视频限定在该区域内">'
+        f'data-task-id="{_esc(task_id)}" title="把白色区域应用到 video：X/Y=区域左上角，区域宽高=检测值（红框），裁剪从原视频(0,0)取同尺寸，缩放=区域宽/1920（裁剪视频恰好铺满区域，红蓝重合为理想起点）">'
         f'✅ 填充到视频位置和裁剪</button>'
         f'</div>'
         f'</div>'
@@ -4646,8 +4678,9 @@ def _register_slirn_api(
         allowed_keys = (
             "x", "y", "scale", "enabled",
             "crop_x", "crop_y", "crop_w", "crop_h",
+            "region_w", "region_h",  # REQ-20261108-002：视频区域宽高（红框口径）
             "duration", "crop_aspect_lock",
-            "debug_borders",  # REQ-20261108：调试边框（红=视频展示区 蓝=实际落位）
+            "debug_borders",  # REQ-20261108：调试边框（红=视频区域 蓝=实际落位）
         )
         for mat_key, val in layout.items():
             if mat_key not in _FINE_LAYOUT_DEFAULTS:

@@ -4197,16 +4197,23 @@
       aspectEl.textContent = w > 0 ? (h / w).toFixed(3) : '0.000';
     }
     // REQ-20260919-062 v7：实时计算视频显示尺寸（crop_w × scale, crop_h × scale）
+    // REQ-20261108-002 用户口径：红=视频区域（region_w×region_h，未设置回退为蓝），
+    // 蓝=实际视频摆放尺寸（1920×scale），匹配度=蓝填满红的程度。
     function updateVideoDisp() {
       var cw = document.getElementById('slirn-fine-video-crop_w');
       var ch = document.getElementById('slirn-fine-video-crop_h');
       var sc = document.getElementById('slirn-fine-video-scale');
+      var rwEl = document.getElementById('slirn-fine-video-region_w');
+      var rhEl = document.getElementById('slirn-fine-video-region_h');
+      var redW = document.getElementById('slirn-fine-video-red-w');
+      var redH = document.getElementById('slirn-fine-video-red-h');
       var dispW = document.getElementById('slirn-fine-video-disp-w');
       var dispH = document.getElementById('slirn-fine-video-disp-h');
       var scalePct = document.getElementById('slirn-fine-video-scale-pct');
-      var aspect = document.getElementById('slirn-fine-video-aspect');
       var cropWPct = document.getElementById('slirn-fine-video-crop-w-pct');
       var cropHPct = document.getElementById('slirn-fine-video-crop-h-pct');
+      var matchW = document.getElementById('slirn-fine-video-match-w');
+      var matchH = document.getElementById('slirn-fine-video-match-h');
       if (!cw || !ch || !sc) return;
       var w = parseFloat(cw.value) || 0;
       var h = parseFloat(ch.value) || 0;
@@ -4219,7 +4226,16 @@
       if (dispW) dispW.textContent = String(dw);
       if (dispH) dispH.textContent = String(dh);
       if (scalePct) scalePct.textContent = (s * 100).toFixed(4);
-      if (aspect) aspect.textContent = dw > 0 ? (dh / dw).toFixed(3) : '0.000';
+      // REQ-20261108-002：红=区域宽高（region 未设置(<=0)回退为实际视频尺寸），
+      // 匹配 = 实际视频/区域（宽、高分开算，1 位小数）
+      var rw = rwEl ? (parseInt(rwEl.value, 10) || 0) : 0;
+      var rh = rhEl ? (parseInt(rhEl.value, 10) || 0) : 0;
+      var useW = rw > 0 ? rw : dw;
+      var useH = rh > 0 ? rh : dh;
+      if (redW) redW.textContent = String(useW);
+      if (redH) redH.textContent = String(useH);
+      if (matchW) matchW.textContent = useW > 0 ? (dw / useW * 100).toFixed(1) : '100.0';
+      if (matchH) matchH.textContent = useH > 0 ? (dh / useH * 100).toFixed(1) : '100.0';
       // REQ-20260919-062 v10：占背景图宽高百分比 = crop_w / 1920 × 100%,
       // crop_h / 1080 × 100%（背景图整个区域 = 设计空间 1920×1080）。
       if (cropWPct) cropWPct.textContent = (w / 1920 * 100).toFixed(2);
@@ -4228,6 +4244,12 @@
     // REQ-20260919-062 v10：去掉了页面内的预览框（设计空间画布）— 不再需要
     // _fineApplyVideoLayout / _fineApplyVideoLayout ResizeObserver。预览只通过
     // 弹窗 .slirn-mat-preview-float（每个素材独立预览）进行。
+    // REQ-20261108-002：区域模式 = 用户设置了视频区域宽（region_w>0）。
+    // 该模式下 scale 锚定区域宽度（自动按钮=区域宽/1920），crop 变化不再牵动 scale。
+    function _regionModeActive() {
+      var rwEl = document.getElementById('slirn-fine-video-region_w');
+      return !!(rwEl && (parseInt(rwEl.value, 10) || 0) > 0);
+    }
     // REQ-20260919-062 v15：crop_w 变化时自动重算 scale = crop_w / 1920（保留 4 位小数）。
     // 共用公式：scale = crop_w / 1920；clamp 到 [0.1, 2.0]；toFixed(4) 取 4 位小数。
     // 不在这里 toast（避免每次拖滑块都弹提示）；保存走 bindFineControls 的 debounceSave。
@@ -4269,13 +4291,18 @@
           var k = el.getAttribute('data-key') || '';
           if (k === 'video.crop_w' || k === 'video.crop_h') updateCropAspect();
           // REQ-20260919-062 v7：video.crop_w/crop_h/scale 变化时刷新显示尺寸
-          if (k === 'video.crop_w' || k === 'video.crop_h' || k === 'video.scale') {
+          // REQ-20261108-002：region_w/region_h 变化同样刷新（红框+匹配度）
+          if (k === 'video.crop_w' || k === 'video.crop_h' || k === 'video.scale' ||
+              k === 'video.region_w' || k === 'video.region_h') {
             updateVideoDisp();
           }
           // REQ-20260919-062 v15：crop_w 变化时自动重算 scale（保留 4 位小数）。
+          // REQ-20261108-002：区域模式（region_w>0）下 scale 锚定区域宽度，
+          // 不再被 crop_w 牵动 —— 用户调裁剪形状时保持填满区域的宽度，
+          // 高度方向的匹配度变化留给信息行展示。
           // scale 的 input 事件会被同 handler 处理 → 触发 updateVideoDisp + debounceSave，
           // 因此无需在这里单独调 fineSaveAll。
-          if (k === 'video.crop_w') {
+          if (k === 'video.crop_w' && !_regionModeActive()) {
             _recomputeScaleFromCropW();
           }
         }
@@ -4510,11 +4537,11 @@
           toast('⚠️ 请先点「🔍 检测区域」', 'warning');
           return;
         }
-        // 逻辑：检测到的区域是用来展示视频的画布矩形。
-        //   - 视频左上角 = 区域左上角 → video.X = r.x, video.Y = r.y
-        //   - 区域宽高 = 从原视频截取的宽高 → video.crop_w = r.width, crop_h = r.height
-        //   - 从原视频 (0,0) 起取这块矩形 → video.crop_x = 0, crop_y = 0
-        //   - 缩放归 1.0，让裁剪后的视频刚好填满区域
+        // REQ-20261108-002 用户口径：检测到的白色区域 = 展示视频的区域（红框）。
+        //   - 区域左上角偏移 → video.X = r.x, video.Y = r.y
+        //   - 区域宽高（红框尺寸）→ video.region_w = r.width, region_h = r.height
+        //   - 裁剪从原视频 (0,0) 取同尺寸 → crop_x=0, crop_y=0, crop_w=r.width, crop_h=r.height
+        //   - 缩放 = 区域宽/1920 → 实际视频宽恰好=区域宽（红蓝重合 = 理想起点）
         function _setSlider(sliderId, val) {
           var s = document.getElementById(sliderId);
           var n = document.getElementById(sliderId + '_num');
@@ -4524,17 +4551,20 @@
           }
           if (n) n.value = String(val);
         }
+        var fillScale = Math.round((r.width / 1920) * 10000) / 10000;
         _setSlider('slirn-fine-video-x', r.x);
         _setSlider('slirn-fine-video-y', r.y);
+        _setSlider('slirn-fine-video-region_w', r.width);
+        _setSlider('slirn-fine-video-region_h', r.height);
         _setSlider('slirn-fine-video-crop_x', 0);
         _setSlider('slirn-fine-video-crop_y', 0);
         _setSlider('slirn-fine-video-crop_w', r.width);
         _setSlider('slirn-fine-video-crop_h', r.height);
-        _setSlider('slirn-fine-video-scale', 1.0);
+        _setSlider('slirn-fine-video-scale', fillScale);
 
         // 注意：填充只改滑块显示值，不落库、不设 viewport 限定 —
-        // 用户手工微调 X/Y 后点「保存全部设置」时按调整值原样保存。
-        toast('✅ 已填充：video 位置=(' + r.x + ', ' + r.y + ')，从原视频 (0,0) 截取 ' + r.width + '×' + r.height + '，缩放 1.00 填满区域；可手工调整后保存', 'success');
+        // 用户手工微调后点「保存全部设置」时按调整值原样保存。
+        toast('✅ 已填充：区域 (' + r.x + ', ' + r.y + ') ' + r.width + '×' + r.height + '（红框），裁剪从 (0,0) 取同尺寸，缩放 ' + fillScale.toFixed(4) + ' 恰好铺满区域；可手工调整后保存', 'success');
       });
     }
   }
@@ -5586,13 +5616,25 @@
       toast('❌ 找不到裁剪宽度 / 缩放滑块', 'error');
       return;
     }
-    var cropW = parseInt(cropWEl.value, 10);
-    if (!cropW || cropW <= 0) {
-      toast('❌ 视频裁剪宽度无效', 'error');
+    // REQ-20261108-002 用户口径：区域模式（region_w>0）优先 —— 缩放 = 区域宽/1920，
+    // 裁剪视频恰好铺满区域宽度（蓝宽=红宽）；区域未设置时回退旧行为（裁剪宽/1920）。
+    var regionW = 0;
+    var rwEl = document.getElementById('slirn-fine-video-region_w');
+    if (rwEl) regionW = parseInt(rwEl.value, 10) || 0;
+    var basis, label;
+    if (regionW > 0) {
+      basis = regionW;
+      label = '按区域宽度';
+    } else {
+      basis = parseInt(cropWEl.value, 10);
+      label = '按裁剪宽度';
+    }
+    if (!basis || basis <= 0) {
+      toast('❌ ' + (regionW > 0 ? '区域宽度无效' : '视频裁剪宽度无效'), 'error');
       return;
     }
     // REQ-20260919-062 v15：保留 4 位小数（与自动重算路径一致）
-    var scale = Math.round((cropW / 1920) * 10000) / 10000;
+    var scale = Math.round((basis / 1920) * 10000) / 10000;
     // 限制到滑块范围 [0.1, 2.0]
     var minS = parseFloat(scaleEl.min || '0.1');
     var maxS = parseFloat(scaleEl.max || '2.0');
@@ -5601,7 +5643,8 @@
     _fineSyncSlider('slirn-fine-video-scale', scale);
     // 触发保存 + 刷新视频信息行（updateVideoDisp 由滑块 change 事件触发）
     fineSaveAll();
-    toast('✅ 已应用「按裁剪宽度」：scale = ' + scale.toFixed(4));
+    toast('✅ 已应用「' + label + '」：scale = ' + scale.toFixed(4) +
+          (regionW > 0 ? '（实际视频宽 = 区域宽 ' + regionW + 'px）' : ''));
   }
   // ========== END REQ-20260919-061 前端函数 ==========
   function optFilterBtn(btn) {  // 只看有不明确字词的行 / 全部行

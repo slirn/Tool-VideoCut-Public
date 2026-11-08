@@ -71,9 +71,14 @@ _FINE_LAYOUT_DEFAULTS = {
                  # 默认 True，与前端默认勾选保持一致。
                  "crop_aspect_lock": True,
                  # REQ-20261108：调试边框 —— 勾选后预览/成片画红/蓝虚线框
-                 # （红=视频展示区=配置位置+显示尺寸，蓝=实际落位），
+                 # （红=视频区域=X/Y+region_w×region_h，蓝=裁剪视频缩放后实际落位），
                  # 目视验证位置/裁剪参数是否生效；导出成片前手动取消
-                 "debug_borders": False},
+                 "debug_borders": False,
+                 # REQ-20261108-002 用户口径：视频区域有自己的宽高（如背景检测出的
+                 # 1587×996），独立于视频实际摆放尺寸（1920×scale）——
+                 # 红=区域（X/Y + region_w×region_h），蓝=实际视频（sw×sh），
+                 # 匹配度=蓝填满红的程度。0 = 未设置（红回退为蓝，兼容旧任务）。
+                 "region_w": 0, "region_h": 0},
     "subtitle": {"x": 672,  "y": 972,  "scale": 1.0, "enabled": True},
     "cover":    {"enabled": False, "duration": 2.0},
     "bg":       {"x": 0,    "y": 0,    "scale": 1.0, "enabled": False},
@@ -802,13 +807,14 @@ def _build_fine_filter(fc: dict, W: int, H: int) -> tuple[list[str], list[str], 
 
 
 def _fine_debug_rects(vc: dict, W: int, H: int) -> list[tuple[dict, tuple, int]] | None:
-    """调试边框矩形（REQ-20261108）——与 _assemble_fine_filter 视频层同口径。
+    """调试边框矩形（REQ-20261108，-002 用户口径修订）——与渲染层同口径。
 
-    红 = 视频展示区：配置的 x/y（**不钳制**——越界部分画不进画布，保留
-        「配置在哪」的对照信息）+ 显示尺寸 sw×sh（与渲染同一公式：
-        sw = W×scale，sh = sw×crop_h/crop_w，保持裁剪比例）。
-    蓝 = 实际落位：overlay 同口径（x/y 钳到画布内 [0,W]/[0,H]）。
-    配置在画布内时两框重合（红蓝三明治，正常）；分离 = x/y 被越界钳制过。
+    红 = 视频区域：配置的 x/y（**不钳制**——越界部分画不进画布，保留
+        「配置在哪」的对照信息）+ region_w×region_h（独立区域尺寸，如背景
+        检测出的 1587×996）；region 未设置（<=0）时回退为实际视频尺寸。
+    蓝 = 实际落位：裁剪视频经缩放后的真实摆放——尺寸 sw = W×scale、
+        sh = sw×crop_h/crop_w，位置 = overlay 同口径（x/y 钳 [0,W]/[0,H]）。
+    理想态 = 蓝填满红（两框重合）；分离 = 区域与实际视频的差距（匹配度）。
     video 未启用 / 数据异常 → None（不画框，绝不拦渲染）。
     """
     try:
@@ -818,12 +824,16 @@ def _fine_debug_rects(vc: dict, W: int, H: int) -> list[tuple[dict, tuple, int]]
         ch = max(1, int(vc.get("crop_h") or 0))
         sw = max(1, int(round(W * float(vc.get("scale") or 0))))
         sh = max(1, int(round(sw * ch / cw)))
+        rw = int(vc.get("region_w") or 0)
+        rh = int(vc.get("region_h") or 0)
         rx = int(vc.get("x") or 0)
         ry = int(vc.get("y") or 0)
         vx = max(0, min(W, rx))
         vy = max(0, min(H, ry))
         return [
-            ({"x": rx, "y": ry, "w": sw, "h": sh}, _dborders.DEBUG_RED, 14),
+            ({"x": rx, "y": ry,
+              "w": rw if rw > 0 else sw, "h": rh if rh > 0 else sh},
+             _dborders.DEBUG_RED, 14),
             ({"x": vx, "y": vy, "w": sw, "h": sh}, _dborders.DEBUG_BLUE, 6),
         ]
     except Exception:  # noqa: BLE001 — 边框只是调试辅助，异常不拦渲染
