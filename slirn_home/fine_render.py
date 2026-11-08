@@ -815,9 +815,13 @@ def _fine_debug_rects(vc: dict, W: int, H: int) -> list[tuple[dict, tuple, int]]
     蓝 = 实际落位：裁剪视频经缩放后的真实摆放——尺寸 sw = W×scale、
         sh = sw×crop_h/crop_w，位置 = overlay 同口径（x/y 钳 [0,W]/[0,H]）。
     理想态 = 蓝填满红（两框重合）；分离 = 区域与实际视频的差距（匹配度）。
-    video 未启用 / 数据异常 → None（不画框，绝不拦渲染）。
+    debug_borders 关闭 / video 未启用 / 数据异常 → None（不画框，绝不拦渲染）。
+    REQ-20261108-005：开关判断收进本函数（单一事实源）——长视频移植时漏了
+    这层门禁（短视频路径有 spec.debug_borders 判断），边框恒画、取消勾选无效。
     """
     try:
+        if not bool(vc.get("debug_borders")):
+            return None
         if not bool(vc.get("enabled", True)):
             return None
         cw = max(1, int(vc.get("crop_w") or 0))
