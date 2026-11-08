@@ -1890,6 +1890,19 @@ def _stage6_fine(project: dict) -> str:
         f'高度按截取视频的宽高比自动计算（不变形、不用背景补边）'
         f'</span>'
         f'</div>'
+        # REQ-20261108：调试边框 —— 目视验证位置/裁剪参数是否及时生效
+        f'<div class="slirn-fine-fit-ctrl">'
+        f'<label class="slirn-fine-fit-label">'
+        f'<input type="checkbox" class="slirn-sv-video-debug-borders" '
+        f'data-key="video.debug_borders" '
+        f'{"checked" if bool((layout.get("video") or {}).get("debug_borders", False)) else ""}> '
+        f'调试边框（红=视频区域 蓝=实际位置）</label>'
+        f'<span class="slirn-fine-fit-hint">'
+        f'勾选后预览/成片上画两个虚线框：红框 = 视频区域参数配置的位置，'
+        f'蓝框 = 视频实际落位；改位置/裁剪参数后重新预览，两框随参数移动'
+        f'即为生效'
+        f'</span>'
+        f'</div>'
     )
     bg_xy_block = _xy_block("bg", "🎨", "背景区域", layout.get("bg"))
 

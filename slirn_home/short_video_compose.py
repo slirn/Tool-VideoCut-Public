@@ -135,6 +135,76 @@ def _clamp_rect(rect: dict) -> dict:
     return {"x": x, "y": y, "w": w, "h": h}
 
 
+def _video_actual_rect(spec: "ComposeSpec") -> dict | None:
+    """主视频在成片画布上的**实际**显示矩形（与 overlay 表达式同口径复算）。
+
+    video_fit=True → 恒等于视频区域（拉伸铺满）；False → 宽度优先：宽=区域
+    宽（截偶），高 = 宽 / R（截偶），R = 裁剪内容宽高比 × (ky/kx)（与滤镜
+    _R 表达式一致），区域内垂直居中（高度超出区域时上下溢出）。源分辨率
+    未知（探测失败）→ None（只画红框）。
+    """
+    if not spec.src_w or not spec.src_h:
+        return None
+    r = _clamp_rect(spec.video_rect)
+    vx, vy, vw, vh = int(r["x"]), int(r["y"]), int(r["w"]), int(r["h"])
+    if spec.video_fit:
+        return {"x": vx, "y": vy, "w": vw, "h": vh}
+    vc = spec.video_crop
+    cw = spec.src_w * int(vc["w"]) / SRC_DESIGN_W
+    ch = spec.src_h * int(vc["h"]) / SRC_DESIGN_H
+    if cw <= 0 or ch <= 0:
+        return None
+    kx = (spec.out_w / DESIGN_W) or 1.0
+    ky = (spec.out_h / DESIGN_H) or 1.0
+    R = (cw / ch) * (ky / kx)
+    if R <= 0:
+        return None
+    w = max(2, (vw // 2) * 2)
+    h = max(2, int(vw / R) // 2 * 2)
+    return {"x": vx, "y": int(round(vy + (vh - h) / 2.0)), "w": w, "h": h}
+
+
+def _dashed_rect(draw, rect: dict, color, width: int,
+                 dash: int = 26, gap: int = 16) -> None:
+    """在设计空间画轴对齐虚线矩形（调试边框用）。"""
+    x0, y0 = int(rect["x"]), int(rect["y"])
+    x1, y1 = x0 + int(rect["w"]), y0 + int(rect["h"])
+    step = dash + gap
+
+    def _h(py: int, xa: int, xb: int) -> None:
+        t = xa
+        while t < xb:
+            draw.line([(t, py), (min(t + dash, xb), py)], fill=color, width=width)
+            t += step
+
+    def _v(px: int, ya: int, yb: int) -> None:
+        t = ya
+        while t < yb:
+            draw.line([(px, t), (px, min(t + dash, yb))], fill=color, width=width)
+            t += step
+
+    _h(y0, x0, x1)
+    _h(y1, x0, x1)
+    _v(x0, y0, y1)
+    _v(x1, y0, y1)
+
+
+_DEBUG_RED = (255, 0, 0, 255)
+_DEBUG_BLUE = (0, 112, 255, 255)
+
+
+def _debug_border_png(path: Path,
+                      rects: list[tuple[dict, tuple, int]]) -> None:
+    """设计画布尺寸的透明 PNG，逐框叠加虚线（红=区域配置，蓝=实际落位）。"""
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGBA", (DESIGN_W, DESIGN_H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    for rect, color, width in rects:
+        _dashed_rect(draw, rect, color, width)
+    img.save(path)
+
+
 def _parse_srt(path: Path | str) -> list[dict]:
     """SRT → [{start, end, text}]（秒）。时间行非法的块跳过。"""
     try:
@@ -615,6 +685,13 @@ class ComposeSpec:
     # True = 截取的视频拉伸铺满视频区域（原固定语义）；False = 宽度优先，
     # 宽度适配到区域宽、高度按截取视频宽高比自动算出（居中，不补背景）
     video_fit: bool = True
+    # REQ-20261108：调试边框（params.layout.video.debug_borders）——成片上
+    # 叠加红虚线框（视频区域配置位置）+ 蓝虚线框（主视频实际落位），
+    # 用于目视验证位置参数是否及时生效
+    debug_borders: bool = False
+    src_w: int = 0                          # 源视频像素宽（0=未知，蓝框跳过）
+    src_h: int = 0
+    video_actual_rect: dict | None = None   # 主视频实际落位（复算 overlay 几何）
     bgm_path: Path | None = None
     volume_db: float = -6.0
     fade_in: float = 0.5
@@ -647,11 +724,14 @@ class ComposeSpec:
 
 def build_compose_command(spec: ComposeSpec, output_path: Path,
                           ass_path: Path | None,
-                          cover_ass_path: Path | None = None) -> dict:
+                          cover_ass_path: Path | None = None,
+                          border_png: Path | None = None) -> dict:
     """组装 ffmpeg 命令（不执行）。返回
     {cmd, input_args, filter_complex, expected_output_sec, out_w, out_h}。
 
     cover_ass_path：REQ-20261018-185 封面段标题 ASS（烧在封面 [intro] 流上）。
+    border_png：REQ-20261108 调试边框透明 PNG（设计画布尺寸；只叠主段，
+    封面段不带——封面是整幅图，区域框画上去只会造成误解）。
     """
     input_args: list[str] = []
     chain: list[str] = []
@@ -839,6 +919,19 @@ def build_compose_command(spec: ComposeSpec, output_path: Path,
         chain.append(f"{cur}{ass_arg}[v3]")
         cur = "[v3]"
 
+    # ---- L4.5 调试边框（REQ-20261108：红=视频区域配置，蓝=实际落位）----
+    # 叠在主段最上层（文字之上），封面 concat 之前——封面段不带框
+    if spec.debug_borders and border_png is not None and Path(border_png).is_file():
+        input_args += ["-loop", "1"]
+        if canvas_bound:
+            input_args += ["-t", f"{canvas_bound:.3f}"]
+        input_args += ["-i", str(border_png)]
+        bd_idx = idx
+        idx += 1
+        chain.append(f"[{bd_idx}:v]format=rgba[bord]")
+        chain.append(f"{cur}[bord]overlay=x=0:y=0[v3b]")
+        cur = "[v3b]"
+
     # ---- A1/A2 音频 ----
     if spec.is_preview:
         chain.append(f"[{video_idx}:a]asetpts=PTS-STARTPTS[a0]")
@@ -1003,16 +1096,30 @@ def _atomic_render(spec: ComposeSpec, out_path: Path, work_dir: Path) -> float:
     if cover_ass_text:
         cover_ass_path = work_dir / f"cover_{int(time.time() * 1000) % 100000}.ass"
         cover_ass_path.write_text(cover_ass_text, encoding="utf-8")
+    # REQ-20261108：调试边框 PNG（红=视频区域配置，蓝=实际落位）
+    border_png: Path | None = None
+    if spec.debug_borders:
+        rects: list[tuple[dict, tuple, int]] = [
+            (spec.video_rect, _DEBUG_RED, 14)]
+        if spec.video_actual_rect:
+            rects.append((spec.video_actual_rect, _DEBUG_BLUE, 6))
+        border_png = work_dir / f"borders_{int(time.time() * 1000) % 100000}.png"
+        try:
+            _debug_border_png(border_png, rects)
+        except Exception as e:  # noqa: BLE001 — 边框只是调试辅助，失败不拦渲染
+            log.warning("[sv-compose] 调试边框 PNG 生成失败（跳过）: %s", e)
+            border_png = None
     tmp = work_dir / (out_path.name + ".tmp.mp4")
     try:
-        built = build_compose_command(spec, tmp, ass_path, cover_ass_path)
+        built = build_compose_command(spec, tmp, ass_path, cover_ass_path,
+                                      border_png)
         log.info("[sv-compose] %s", " ".join(built["cmd"])[:2000])
         _run_ffmpeg(built["cmd"])
         if not tmp.is_file() or tmp.stat().st_size < 1024:
             raise svc.ShortVideoError("ffmpeg 渲染产物缺失/过小")
         os.replace(tmp, out_path)
     finally:
-        for _p in (ass_path, cover_ass_path):
+        for _p in (ass_path, cover_ass_path, border_png):
             if _p is not None:
                 try:
                     _p.unlink(missing_ok=True)
@@ -1030,6 +1137,22 @@ def _ffprobe_duration_fallback(path: Path) -> float | None:
         return float(proc.stdout.strip()) if proc.returncode == 0 else None
     except Exception:  # noqa: BLE001
         return None
+
+
+def _ffprobe_dims(path: Path) -> tuple[int, int]:
+    """源视频像素尺寸（调试边框复算实际落位用）；探测失败 → (0, 0)。"""
+    try:
+        proc = subprocess.run(
+            [_ffprobe_bin(), "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height",
+             "-of", "csv=p=0:s=x", str(path)],
+            capture_output=True, text=True, timeout=30)
+        if proc.returncode == 0 and "x" in proc.stdout:
+            w, h = proc.stdout.strip().split("x")[:2]
+            return int(w), int(h)
+    except Exception:  # noqa: BLE001
+        pass
+    return 0, 0
 
 
 def resolve_compose_spec(root: Path, project: dict, index: int, *,
@@ -1156,6 +1279,14 @@ def resolve_compose_spec(root: Path, project: dict, index: int, *,
     spec.video_rect = _rect(layout, "video")
     # REQ-20261029-010：适配方式（缺省=勾选=铺满区域，与历史行为一致）
     spec.video_fit = bool((layout.get("video") or {}).get("video_fit", True))
+    # REQ-20261108：调试边框（layout.video.debug_borders）——红虚线框=视频
+    # 区域配置位置，蓝虚线框=主视频实际落位（按 overlay 同口径复算）。
+    # 开启时才 probe 源分辨率（日常渲染零额外开销）
+    spec.debug_borders = bool(
+        (layout.get("video") or {}).get("debug_borders", False))
+    if spec.debug_borders:
+        spec.src_w, spec.src_h = _ffprobe_dims(video_path)
+        spec.video_actual_rect = _video_actual_rect(spec)
 
     # 字幕事件映射。REQ-20261018-184：字幕区域未勾选 → 只跳过**烧录**
     # （ass_events 不加），导出的精剪切分（segments）仍按字幕时间轴算——
