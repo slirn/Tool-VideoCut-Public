@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 # quality 23 对标 libx264 fast crf 23；SLIRN_FINE_HW_ENC=0 强制关闭。
 from slirn_home.fftools import ffprobe_bin as _ffprobe_bin  # noqa: E402
 from slirn_home.hw_encode import encoder_args as _fine_video_encoder_args  # noqa: E402
+from slirn_home import debug_borders as _dborders  # noqa: E402 — 调试边框（REQ-20261108，与短视频共用）
 
 
 # REQ-20260919-061：精剪视频·四素材合成器 — 数据结构辅助函数
@@ -68,7 +69,11 @@ _FINE_LAYOUT_DEFAULTS = {
                  # True = crop_w/crop_h 拖动时按 16:9 联动（防变形）；
                  # False = 任意调整（1:1 等预设才能任意设 w=h）。
                  # 默认 True，与前端默认勾选保持一致。
-                 "crop_aspect_lock": True},
+                 "crop_aspect_lock": True,
+                 # REQ-20261108：调试边框 —— 勾选后预览/成片画红/蓝虚线框
+                 # （红=视频展示区=配置位置+显示尺寸，蓝=实际落位），
+                 # 目视验证位置/裁剪参数是否生效；导出成片前手动取消
+                 "debug_borders": False},
     "subtitle": {"x": 672,  "y": 972,  "scale": 1.0, "enabled": True},
     "cover":    {"enabled": False, "duration": 2.0},
     "bg":       {"x": 0,    "y": 0,    "scale": 1.0, "enabled": False},
@@ -796,6 +801,35 @@ def _build_fine_filter(fc: dict, W: int, H: int) -> tuple[list[str], list[str], 
     return inputs, chain, cur
 
 
+def _fine_debug_rects(vc: dict, W: int, H: int) -> list[tuple[dict, tuple, int]] | None:
+    """调试边框矩形（REQ-20261108）——与 _assemble_fine_filter 视频层同口径。
+
+    红 = 视频展示区：配置的 x/y（**不钳制**——越界部分画不进画布，保留
+        「配置在哪」的对照信息）+ 显示尺寸 sw×sh（与渲染同一公式：
+        sw = W×scale，sh = sw×crop_h/crop_w，保持裁剪比例）。
+    蓝 = 实际落位：overlay 同口径（x/y 钳到画布内 [0,W]/[0,H]）。
+    配置在画布内时两框重合（红蓝三明治，正常）；分离 = x/y 被越界钳制过。
+    video 未启用 / 数据异常 → None（不画框，绝不拦渲染）。
+    """
+    try:
+        if not bool(vc.get("enabled", True)):
+            return None
+        cw = max(1, int(vc.get("crop_w") or 0))
+        ch = max(1, int(vc.get("crop_h") or 0))
+        sw = max(1, int(round(W * float(vc.get("scale") or 0))))
+        sh = max(1, int(round(sw * ch / cw)))
+        rx = int(vc.get("x") or 0)
+        ry = int(vc.get("y") or 0)
+        vx = max(0, min(W, rx))
+        vy = max(0, min(H, ry))
+        return [
+            ({"x": rx, "y": ry, "w": sw, "h": sh}, _dborders.DEBUG_RED, 14),
+            ({"x": vx, "y": vy, "w": sw, "h": sh}, _dborders.DEBUG_BLUE, 6),
+        ]
+    except Exception:  # noqa: BLE001 — 边框只是调试辅助，异常不拦渲染
+        return None
+
+
 def _assemble_fine_filter(
     task_id: str,
     mgr,
@@ -976,6 +1010,7 @@ def _assemble_fine_filter(
         and (materials.get("audio") or {}).get("path")
     )
     bgm_input_bounded = False
+    _bgm_input_idx = -1  # 显式记录：调试边框输入会追加在其后，inputs_count-1 不再指向 BGM
     # REQ-20260929-NNN（两进程导出）：BGM 输入在 input_args 里的切片范围
     # [lo, hi)（pass2 原位替换成 -i <音频中间WAV>，保持后续输入索引不变）。
     audio_input_span: tuple[int, int] | None = None
@@ -1001,6 +1036,9 @@ def _assemble_fine_filter(
                 input_args += ["-i", str(audio_path)]
                 bgm_input_bounded = False
             audio_input_span = (_audio_input_lo, len(input_args))
+            _bgm_input_idx = sum(
+                1 for _i, _tok in enumerate(input_args)
+                if _tok == "-i") - 1
         else:
             audio_cfg = dict(audio_cfg)
             audio_cfg["enabled"] = False
@@ -1047,6 +1085,39 @@ def _assemble_fine_filter(
             if new_ref != ref_abs:
                 _replace_input_path(ref_abs, new_ref)
                 image_tmp_paths.append(new_ref)
+
+    # REQ-20261108：调试边框（长视频精剪）——layout.video.debug_borders 勾选后，
+    # 预览/成片画红/蓝虚线框（红=视频展示区=配置位置+显示尺寸，蓝=实际落位）。
+    # 绘制与短视频共用 slirn_home.debug_borders；画布=设计空间 1920×1080，
+    # 边框输入放最后（不影响 bg/cover/silence/bgm 的既有位置索引）。
+    border_input_idx = -1
+    _dbg_rects = _fine_debug_rects(layout["video"], W, H)
+    if _dbg_rects:
+        import tempfile as _btf
+
+        _bh = _btf.NamedTemporaryFile(
+            mode="wb", suffix=".png", delete=False, prefix="slirn_fine_borders_")
+        _bh.close()
+        _b_path = Path(_bh.name)
+        try:
+            _dborders.border_png(_b_path, _dbg_rects, W, H)
+        except Exception as e:  # noqa: BLE001 — 边框只是调试辅助，失败不拦渲染
+            log.warning("REQ-20261108: 调试边框 PNG 生成失败，忽略: %s", e)
+            try:
+                _b_path.unlink()
+            except OSError:
+                pass
+        else:
+            image_tmp_paths.append(_b_path)  # 随调用方 finally 统一清理
+            input_args += ["-loop", "1"]
+            _b_bound = (canvas_bound if canvas_bound is not None
+                        else expected_output_sec)
+            if _b_bound is not None:
+                # 主段边界（含 0.5s 余量，与 bg 画布口径一致；cover 前缀段不画框）
+                input_args += ["-t", f"{_b_bound:.3f}"]
+            input_args += ["-i", str(_b_path)]
+            border_input_idx = sum(
+                1 for _i, _tok in enumerate(input_args) if _tok == "-i") - 1
 
     # 4. filter_complex
     chain: list[str] = []
@@ -1176,6 +1247,13 @@ def _assemble_fine_filter(
         chain.append(f"{cur}copy[vsub]")
         cur = "[vsub]"
 
+    # REQ-20261108：调试边框叠加 —— 主段最上层、封面 concat 之前（封面段不带框）、
+    # 输出缩放之前（设计空间画框，720p 导出时随画面等比缩小）
+    if border_input_idx >= 0:
+        chain.append(f"[{border_input_idx}:v]format=rgba[bord]")
+        chain.append(f"{cur}[bord]overlay=x=0:y=0[vdbg]")
+        cur = "[vdbg]"
+
     cover_idx = -1
     if cover_input_enabled:
         if bg_idx >= 0:
@@ -1199,7 +1277,7 @@ def _assemble_fine_filter(
         chain.append(f"{cur}scale={out_w}:{out_h}:flags=lanczos,setsar=1[vfinal]")
         cur = "[vfinal]"
 
-    audio_idx = inputs_count - 1 if audio_input_enabled else -1
+    audio_idx = _bgm_input_idx if audio_input_enabled else -1
     if cover_input_enabled:
         # REQ-20260920-096：用「silence prefix + [0:a]」concat 替代 adelay，彻底避开
         # PTS 错位。silence_idx 紧跟在 cover 之后，与 cover 时长一致，保证 concat 后
@@ -1334,6 +1412,10 @@ def _predict_audio_path(fc: dict, audio_total_duration: float | None = None) -> 
         inputs_count += 1
 
     # 2. audio_idx = inputs_count - 1（audio 始终最后）
+    # REQ-20261108：调试边框输入追加在 BGM 之后 → 与 _assemble_fine_filter 镜像 +1
+    if (bool(layout.get("video", {}).get("debug_borders"))
+            and bool(layout.get("video", {}).get("enabled", True))):
+        inputs_count += 1
     audio_idx = inputs_count - 1 if audio_input_enabled else -1
 
     # 3. 5 个元素的 will_render 状态

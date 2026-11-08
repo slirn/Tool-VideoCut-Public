@@ -210,26 +210,9 @@ def _video_actual_rect(spec: "ComposeSpec") -> dict | None:
 def _dashed_rect(draw, rect: dict, color, width: int,
                  dash: int = 26, gap: int = 16) -> None:
     """在设计空间画轴对齐虚线矩形（调试边框用）。"""
-    x0, y0 = int(rect["x"]), int(rect["y"])
-    x1, y1 = x0 + int(rect["w"]), y0 + int(rect["h"])
-    step = dash + gap
+    from slirn_home.debug_borders import dashed_rect as _dr
 
-    def _h(py: int, xa: int, xb: int) -> None:
-        t = xa
-        while t < xb:
-            draw.line([(t, py), (min(t + dash, xb), py)], fill=color, width=width)
-            t += step
-
-    def _v(px: int, ya: int, yb: int) -> None:
-        t = ya
-        while t < yb:
-            draw.line([(px, t), (px, min(t + dash, yb))], fill=color, width=width)
-            t += step
-
-    _h(y0, x0, x1)
-    _h(y1, x0, x1)
-    _v(x0, y0, y1)
-    _v(x1, y0, y1)
+    _dr(draw, rect, color, width, dash, gap)
 
 
 _DEBUG_RED = (255, 0, 0, 255)
@@ -238,14 +221,12 @@ _DEBUG_BLUE = (0, 112, 255, 255)
 
 def _debug_border_png(path: Path,
                       rects: list[tuple[dict, tuple, int]]) -> None:
-    """设计画布尺寸的透明 PNG，逐框叠加虚线（红=区域配置，蓝=实际落位）。"""
-    from PIL import Image, ImageDraw
+    """设计画布尺寸的透明 PNG，逐框叠加虚线（红=视频展示区，蓝=实际落位）。
 
-    img = Image.new("RGBA", (DESIGN_W, DESIGN_H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    for rect, color, width in rects:
-        _dashed_rect(draw, rect, color, width)
-    img.save(path)
+    绘制逻辑与长视频共用（slirn_home.debug_borders，REQ-20261108）。"""
+    from slirn_home.debug_borders import border_png as _bp
+
+    _bp(path, rects, DESIGN_W, DESIGN_H)
 
 
 def _parse_srt(path: Path | str) -> list[dict]:

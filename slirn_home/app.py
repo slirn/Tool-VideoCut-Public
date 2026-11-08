@@ -2312,6 +2312,17 @@ def _render_fine_cut_zone(task_id: str, t, mgr: TaskManager) -> str:
         f'🔗 锁定 16:9 比例（防变形；关闭后可任意调整）</label>'
         f'<div class="slirn-fine-crop-aspect">当前矩形比例 ≈ <span id="slirn-fine-crop-aspect-val">{aspect:.3f}</span>'
         f'（目标 16:9 = {16/9:.3f}，1:1 = 1.000）</div>'
+        f'<label class="slirn-fine-crop-link-toggle">'
+        # REQ-20261108：调试边框（与短视频精剪同款，长/短视频语义一致）
+        f'<input type="checkbox" id="slirn-fine-debug-borders" '
+        f'data-key="video.debug_borders" '
+        f'{"checked" if bool(vc.get("debug_borders", False)) else ""}> '
+        f'🐛 调试边框（红=视频展示区 蓝=实际落位）</label>'
+        f'<div class="slirn-fine-crop-aspect">'
+        f'勾选后预览/成片上画两个虚线框：红框 = 视频展示区（视频区域参数配置的位置'
+        f'+显示尺寸，视频应该展现的范围），蓝框 = 实际的视频落位；两框重合属正常'
+        f'（说明参数已生效），分离 = 配置越界被钳制；调试完导出成片前，请先手动取消勾选'
+        f'</div>'
         f'<div class="slirn-fine-params">'
         + "".join(crop_params) +
         f'</div>'
@@ -4636,6 +4647,7 @@ def _register_slirn_api(
             "x", "y", "scale", "enabled",
             "crop_x", "crop_y", "crop_w", "crop_h",
             "duration", "crop_aspect_lock",
+            "debug_borders",  # REQ-20261108：调试边框（红=视频展示区 蓝=实际落位）
         )
         for mat_key, val in layout.items():
             if mat_key not in _FINE_LAYOUT_DEFAULTS:
@@ -4646,6 +4658,9 @@ def _register_slirn_api(
             if mat_key == "video":
                 if "crop_aspect_lock" in existing:
                     existing["crop_aspect_lock"] = bool(existing["crop_aspect_lock"])
+                # REQ-20261108：调试边框开关同样强制 bool
+                if "debug_borders" in existing:
+                    existing["debug_borders"] = bool(existing["debug_borders"])
                 # 旧数据残留的 viewport 清除（夹紧逻辑已删除，字段不再使用）
                 existing.pop("viewport", None)
             fc["layout"][mat_key] = existing
