@@ -135,6 +135,49 @@ def _clamp_rect(rect: dict) -> dict:
     return {"x": x, "y": y, "w": w, "h": h}
 
 
+# REQ-20261108：区域参数渲染前校验 —— 此前越界值被 _clamp_rect 静默钳成
+# 退化几何（用户实测 y=5100 → 钳成 y=1919,h=1 → 适配比 r=(1080·kx)/(1·ky)
+# =1440 → ffmpeg cover 二裁 h=min(ih,iw/1440)<1 → 0 → 渲染失败且报错是
+# 天书）。改为渲染入口校验：超出画布 ±8px 容差即报「哪个区域、哪个字段、
+# 当前值、上限多少」的明确错误；容差内的检测/手输误差仍按原口径静默钳。
+_RECT_OVER_TOL = 8
+
+_LAYOUT_RECT_REGIONS = (
+    # (layout 键, 报错名, 是否恒参与渲染)  恒参与的区域不受 enabled 门控
+    ("video", "视频区域", True),
+    ("bg", "背景区域", False),
+    ("subtitle", "字幕区域", False),
+    ("title", "标题", False),
+    ("cover_title", "封面标题", False),
+    ("mentor_text", "导师文字", False),
+    ("avatar", "导师头像", False),
+)
+
+
+def _validate_layout_rects(layout: dict) -> None:
+    """渲染入口的区域参数校验：越界（超出容差）→ 业务错误并点名参数。"""
+    for key, name, always in _LAYOUT_RECT_REGIONS:
+        cfg = (layout or {}).get(key) or {}
+        if not always and not cfg.get("enabled", True):
+            continue  # 未勾选的区域不参与渲染，不拦
+        r = _rect(layout, key)
+        bad = []
+        if r["x"] > DESIGN_W - 1 + _RECT_OVER_TOL:
+            bad.append(f"x={r['x']}")
+        if r["y"] > DESIGN_H - 1 + _RECT_OVER_TOL:
+            bad.append(f"y={r['y']}")
+        if r["x"] + r["w"] > DESIGN_W + _RECT_OVER_TOL:
+            bad.append(f"x+w={r['x'] + r['w']}")
+        if r["y"] + r["h"] > DESIGN_H + _RECT_OVER_TOL:
+            bad.append(f"y+h={r['y'] + r['h']}")
+        if bad:
+            raise svc.ShortVideoError(
+                f"{name}参数超出画布：{'、'.join(bad)}"
+                f"（设计空间 {DESIGN_W}×{DESIGN_H}，允许超界 ≤"
+                f"{_RECT_OVER_TOL}px）——请把{name}的坐标/宽高改回"
+                f"画布范围内再渲染")
+
+
 def _video_actual_rect(spec: "ComposeSpec") -> dict | None:
     """主视频在成片画布上的**实际**显示矩形（与 overlay 表达式同口径复算）。
 
@@ -819,7 +862,10 @@ def build_compose_command(spec: ComposeSpec, output_path: Path,
         _rs = f"{r_out:.6f}"
         chain.append(
             f"{vsrc}{_crop_expr},"
-            f"crop=w='min(iw\\,ih*{_rs})':h='min(ih\\,iw/{_rs})':"
+            # max(2,…)：极端适配比（区域被钳成 1px 高等退化几何）下
+            # min(ih,iw/R) 会 <1 → crop 拒绝配置；下限 2px 保渲染不炸
+            f"crop=w='max(2\\,min(iw\\,ih*{_rs}))':"
+            f"h='max(2\\,min(ih\\,iw/{_rs}))':"
             f"x='(iw-ow)/2':y='(ih-oh)/2',"
             f"scale={vw}:{vh}:flags=lanczos,setsar=1[vfit]"
         )
@@ -1164,6 +1210,8 @@ def resolve_compose_spec(root: Path, project: dict, index: int, *,
 
     params = fine._get_params(project)
     layout = params.get("layout") or {}
+    # REQ-20261108：区域参数越界 → 明确报错（不再静默钳成退化几何炸 ffmpeg）
+    _validate_layout_rects(layout)
 
     src = fine.resolved_clip_sources(root, project, int(index))
     video_path = src["video_abs"]
